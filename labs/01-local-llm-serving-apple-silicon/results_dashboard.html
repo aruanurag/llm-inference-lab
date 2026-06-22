@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab 1 Results Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --panel: #ffffff;
+      --text: #1f2528;
+      --muted: #677075;
+      --line: #d9dedb;
+      --blue: #2f6f9f;
+      --green: #3d7f5f;
+      --red: #ad4d4d;
+      --gold: #9a6b2f;
+      --purple: #725c9f;
+      --shadow: 0 8px 24px rgba(31, 37, 40, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #eef1ee;
+    }
+
+    .wrap {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: center;
+      padding: 28px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 760px;
+      font-size: 15px;
+    }
+
+    .loader {
+      display: grid;
+      gap: 8px;
+      justify-items: end;
+    }
+
+    input[type="file"] {
+      max-width: 340px;
+      color: var(--muted);
+    }
+
+    main {
+      padding: 24px 0 48px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .cards {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .card,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .card {
+      padding: 16px;
+      min-height: 116px;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .value {
+      margin-top: 8px;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .panel {
+      padding: 18px;
+      overflow: hidden;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .charts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 16px;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 280px;
+      overflow: visible;
+    }
+
+    .axis,
+    .gridline {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+
+    .bar-label,
+    .tick,
+    .legend,
+    .empty {
+      fill: var(--muted);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .empty {
+      padding: 36px;
+      text-align: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+      white-space: normal;
+      min-width: 180px;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .status {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 860px) {
+      .top,
+      .cards,
+      .charts {
+        grid-template-columns: 1fr;
+      }
+
+      .loader {
+        justify-items: start;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <div>
+        <h1>Lab 1 Results Dashboard</h1>
+        <p class="subtitle">Load benchmark JSON files from <code>results/raw/</code> to compare local serving runs across latency, TTFT, approximate ITL, throughput, concurrency, and batching settings.</p>
+      </div>
+      <div class="loader">
+        <input id="fileInput" type="file" accept=".json,application/json" multiple>
+        <div id="status" class="status">No files loaded.</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="grid cards" id="cards"></section>
+
+    <section class="grid charts">
+      <div class="panel">
+        <h2>Latency p95</h2>
+        <svg id="latencyChart" role="img" aria-label="Latency p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>TTFT p95</h2>
+        <svg id="ttftChart" role="img" aria-label="TTFT p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Approximate ITL p95</h2>
+        <svg id="itlChart" role="img" aria-label="Approximate ITL p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Throughput</h2>
+        <svg id="throughputChart" role="img" aria-label="Throughput chart"></svg>
+      </div>
+      <div class="panel wide">
+        <h2>Comparison Table</h2>
+        <div id="table"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const colors = ["#2f6f9f", "#3d7f5f", "#9a6b2f", "#ad4d4d", "#725c9f", "#4d7380"];
+
+    const state = {
+      rows: []
+    };
+
+    const formatSeconds = (value) => {
+      if (value === null || value === undefined || Number.isNaN(value)) return "n/a";
+      if (value < 1) return `${(value * 1000).toFixed(1)} ms`;
+      return `${value.toFixed(2)} s`;
+    };
+
+    const formatNumber = (value) => {
+      if (value === null || value === undefined || Number.isNaN(value)) return "n/a";
+      return value.toFixed(2);
+    };
+
+    const get = (obj, path) => {
+      return path.split(".").reduce((current, key) => {
+        return current && current[key] !== undefined ? current[key] : null;
+      }, obj);
+    };
+
+    function normalizeBenchmark(fileName, data) {
+      const summary = data.summary || data;
+      return {
+        fileName,
+        experiment: summary.experiment || fileName.replace(/\.json$/i, ""),
+        requests: summary.requests ?? null,
+        successfulRequests: summary.successful_requests ?? null,
+        concurrency: summary.concurrency ?? null,
+        wallSeconds: summary.wall_seconds ?? null,
+        requestsPerSecond: summary.requests_per_second ?? null,
+        outputCharsPerSecond: summary.output_chars_per_second ?? null,
+        latencyP50: get(summary, "latency_seconds.p50"),
+        latencyP95: get(summary, "latency_seconds.p95"),
+        latencyP99: get(summary, "latency_seconds.p99"),
+        ttftP50: get(summary, "ttft_seconds.p50"),
+        ttftP95: get(summary, "ttft_seconds.p95"),
+        ttftP99: get(summary, "ttft_seconds.p99"),
+        itlP50: get(summary, "approx_itl_seconds.p50"),
+        itlP95: get(summary, "approx_itl_seconds.p95"),
+        itlP99: get(summary, "approx_itl_seconds.p99")
+      };
+    }
+
+    async function loadFiles(files) {
+      const parsed = [];
+      const errors = [];
+
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          parsed.push(normalizeBenchmark(file.name, JSON.parse(text)));
+        } catch (error) {
+          errors.push(`${file.name}: ${error.message}`);
+        }
+      }
+
+      state.rows = parsed.sort((a, b) => a.experiment.localeCompare(b.experiment));
+      render();
+
+      const status = document.getElementById("status");
+      if (errors.length) {
+        status.textContent = `Loaded ${parsed.length} file(s). ${errors.length} failed.`;
+        console.warn(errors.join("\n"));
+      } else {
+        status.textContent = `Loaded ${parsed.length} file(s).`;
+      }
+    }
+
+    function render() {
+      renderCards();
+      renderBarChart("latencyChart", state.rows, "latencyP95", "Latency p95", formatSeconds);
+      renderBarChart("ttftChart", state.rows, "ttftP95", "TTFT p95", formatSeconds);
+      renderBarChart("itlChart", state.rows, "itlP95", "Approx ITL p95", formatSeconds);
+      renderBarChart("throughputChart", state.rows, "requestsPerSecond", "Req/s", formatNumber);
+      renderTable();
+    }
+
+    function renderCards() {
+      const cards = document.getElementById("cards");
+      if (!state.rows.length) {
+        cards.innerHTML = `
+          <div class="card">
+            <div class="label">Getting started</div>
+            <div class="hint">Choose one or more JSON files produced by benchmark.py from results/raw/.</div>
+          </div>
+        `;
+        return;
+      }
+
+      const bestLatency = minBy(state.rows, "latencyP95");
+      const bestTtft = minBy(state.rows, "ttftP95");
+      const bestItl = minBy(state.rows, "itlP95");
+      const bestThroughput = maxBy(state.rows, "requestsPerSecond");
+
+      cards.innerHTML = [
+        metricCard("Best latency p95", bestLatency, "latencyP95", formatSeconds),
+        metricCard("Best TTFT p95", bestTtft, "ttftP95", formatSeconds),
+        metricCard("Best approx ITL p95", bestItl, "itlP95", formatSeconds),
+        metricCard("Best throughput", bestThroughput, "requestsPerSecond", (v) => `${formatNumber(v)} req/s`)
+      ].join("");
+    }
+
+    function metricCard(label, row, key, formatter) {
+      if (!row) {
+        return `<div class="card"><div class="label">${label}</div><div class="value">n/a</div></div>`;
+      }
+
+      return `
+        <div class="card">
+          <div class="label">${label}</div>
+          <div class="value">${formatter(row[key])}</div>
+          <div class="hint">${escapeHtml(row.experiment)}</div>
+        </div>
+      `;
+    }
+
+    function minBy(rows, key) {
+      return rows.filter((row) => isFiniteNumber(row[key])).sort((a, b) => a[key] - b[key])[0] || null;
+    }
+
+    function maxBy(rows, key) {
+      return rows.filter((row) => isFiniteNumber(row[key])).sort((a, b) => b[key] - a[key])[0] || null;
+    }
+
+    function isFiniteNumber(value) {
+      return typeof value === "number" && Number.isFinite(value);
+    }
+
+    function renderBarChart(id, rows, key, label, formatter) {
+      const svg = document.getElementById(id);
+      svg.innerHTML = "";
+
+      if (!rows.length) {
+        svg.innerHTML = `<text class="empty" x="50%" y="50%" text-anchor="middle">Load benchmark JSON files to render this chart.</text>`;
+        return;
+      }
+
+      const width = svg.clientWidth || 540;
+      const height = 280;
+      const margin = { top: 18, right: 24, bottom: 88, left: 58 };
+      const chartWidth = width - margin.left - margin.right;
+      const chartHeight = height - margin.top - margin.bottom;
+      const values = rows.map((row) => isFiniteNumber(row[key]) ? row[key] : 0);
+      const maxValue = Math.max(...values, 0.000001);
+      const barGap = 12;
+      const barWidth = Math.max(18, (chartWidth - barGap * (rows.length - 1)) / rows.length);
+
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.appendChild(line(margin.left, margin.top, margin.left, margin.top + chartHeight, "axis"));
+      svg.appendChild(line(margin.left, margin.top + chartHeight, margin.left + chartWidth, margin.top + chartHeight, "axis"));
+
+      for (let i = 0; i <= 4; i += 1) {
+        const value = (maxValue / 4) * i;
+        const y = margin.top + chartHeight - (value / maxValue) * chartHeight;
+        svg.appendChild(line(margin.left, y, margin.left + chartWidth, y, "gridline"));
+        svg.appendChild(text(margin.left - 8, y + 4, formatter(value), "tick", "end"));
+      }
+
+      rows.forEach((row, index) => {
+        const value = isFiniteNumber(row[key]) ? row[key] : 0;
+        const x = margin.left + index * (barWidth + barGap);
+        const h = (value / maxValue) * chartHeight;
+        const y = margin.top + chartHeight - h;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", x);
+        rect.setAttribute("y", y);
+        rect.setAttribute("width", barWidth);
+        rect.setAttribute("height", h);
+        rect.setAttribute("rx", 3);
+        rect.setAttribute("fill", colors[index % colors.length]);
+        svg.appendChild(rect);
+        svg.appendChild(text(x + barWidth / 2, y - 6, formatter(value), "bar-label", "middle"));
+        svg.appendChild(rotatedText(x + barWidth / 2, margin.top + chartHeight + 18, shorten(row.experiment), "tick"));
+      });
+
+      svg.appendChild(text(width - margin.right, 18, label, "legend", "end"));
+    }
+
+    function line(x1, y1, x2, y2, className) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      el.setAttribute("x1", x1);
+      el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2);
+      el.setAttribute("y2", y2);
+      el.setAttribute("class", className);
+      return el;
+    }
+
+    function text(x, y, value, className, anchor = "start") {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      el.setAttribute("x", x);
+      el.setAttribute("y", y);
+      el.setAttribute("class", className);
+      el.setAttribute("text-anchor", anchor);
+      el.textContent = value;
+      return el;
+    }
+
+    function rotatedText(x, y, value, className) {
+      const el = text(x, y, value, className, "end");
+      el.setAttribute("transform", `rotate(-38 ${x} ${y})`);
+      return el;
+    }
+
+    function shorten(value) {
+      return value.length > 28 ? `${value.slice(0, 25)}...` : value;
+    }
+
+    function renderTable() {
+      const target = document.getElementById("table");
+      if (!state.rows.length) {
+        target.innerHTML = `<div class="empty">Load benchmark JSON files to render the comparison table.</div>`;
+        return;
+      }
+
+      const rows = state.rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.experiment)}</td>
+          <td>${row.concurrency ?? "n/a"}</td>
+          <td>${row.requests ?? "n/a"}</td>
+          <td>${formatSeconds(row.latencyP50)}</td>
+          <td>${formatSeconds(row.latencyP95)}</td>
+          <td>${formatSeconds(row.ttftP50)}</td>
+          <td>${formatSeconds(row.ttftP95)}</td>
+          <td>${formatSeconds(row.itlP50)}</td>
+          <td>${formatSeconds(row.itlP95)}</td>
+          <td>${formatNumber(row.requestsPerSecond)}</td>
+          <td>${formatNumber(row.outputCharsPerSecond)}</td>
+          <td>${formatSeconds(row.wallSeconds)}</td>
+        </tr>
+      `).join("");
+
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Experiment</th>
+              <th>Concurrency</th>
+              <th>Requests</th>
+              <th>Latency p50</th>
+              <th>Latency p95</th>
+              <th>TTFT p50</th>
+              <th>TTFT p95</th>
+              <th>Approx ITL p50</th>
+              <th>Approx ITL p95</th>
+              <th>Req/s</th>
+              <th>Chars/s</th>
+              <th>Wall time</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    document.getElementById("fileInput").addEventListener("change", (event) => {
+      loadFiles(Array.from(event.target.files || []));
+    });
+
+    render();
+  </script>
+</body>
+</html>

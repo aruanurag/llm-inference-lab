@@ -1,0 +1,3 @@
+You are helping someone build intuition for LLM inference systems.
+
+Explain how prompt processing differs from token generation. Start with a simple analogy, then explain prefill, decode, KV cache, and why long prompts often affect time to first token more than inter-token latency. Keep the explanation practical and focused on what someone might observe while benchmarking a local model server.

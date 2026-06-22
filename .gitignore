@@ -1,0 +1,69 @@
+# macOS / editor noise
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Node / frontend packages, if future dashboards or apps use them
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Local model weights are usually large and should not be committed.
+models/
+labs/*/models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# Keep result directory structure, but ignore generated outputs.
+labs/*/results/raw/*.json
+labs/*/results/logs/*.log
+labs/*/results/logs/*.txt
+labs/*/results/summary.json
+labs/*/results/summary.csv
+
+# Additional generated lab artifacts
+**/results/logs/*
+**/results/raw/*.json
+**/results/summary.json
+**/results/summary.csv
+results/**/*.json
+results/**/*.csv
+results/**/*.log
+results/**/*.txt
+labs/*/results/**/*.json
+labs/*/results/**/*.csv
+labs/*/results/**/*.log
+labs/*/results/**/*.txt
+
+# Preserve intentional placeholders and hand-written observations.
+!labs/*/results/**/.gitkeep
+!labs/*/results/observations.md
+!results/README.md
