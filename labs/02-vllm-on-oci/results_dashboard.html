@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab 2 vLLM on OCI Results</title>
+  <style>
+    :root {
+      --bg: #f6f7f5;
+      --panel: #fff;
+      --text: #202528;
+      --muted: #667176;
+      --line: #d9dfdc;
+      --blue: #2f6f9f;
+      --green: #3f7f5f;
+      --gold: #9a6b2f;
+      --red: #ad4d4d;
+      --purple: #725c9f;
+      --shadow: 0 8px 24px rgba(32, 37, 40, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    header {
+      background: #eef1ee;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .wrap {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: center;
+      padding: 28px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 800px;
+      font-size: 15px;
+    }
+
+    .loader {
+      display: grid;
+      gap: 8px;
+      justify-items: end;
+    }
+
+    main { padding: 24px 0 48px; }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .cards {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .charts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 16px;
+    }
+
+    .card,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .card {
+      padding: 16px;
+      min-height: 116px;
+    }
+
+    .panel {
+      padding: 18px;
+      overflow: hidden;
+    }
+
+    .wide { grid-column: 1 / -1; }
+
+    .label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .value {
+      margin-top: 8px;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .hint,
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hint { margin-top: 10px; }
+    .status { min-height: 20px; }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 280px;
+      overflow: visible;
+    }
+
+    .axis,
+    .gridline {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+
+    .bar-label,
+    .tick,
+    .legend,
+    .empty {
+      fill: var(--muted);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .empty {
+      padding: 36px;
+      text-align: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+      white-space: normal;
+      min-width: 200px;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    @media (max-width: 860px) {
+      .top,
+      .cards,
+      .charts { grid-template-columns: 1fr; }
+      .loader { justify-items: start; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <div>
+        <h1>Lab 2 vLLM on OCI Results</h1>
+        <p class="subtitle">Load raw benchmark JSON files from <code>results/raw/</code> to compare GPU latency, throughput, concurrency, and estimated cost.</p>
+      </div>
+      <div class="loader">
+        <label class="hint" for="hourlyCost">Hourly cost USD</label>
+        <input id="hourlyCost" type="number" min="0" step="0.01" placeholder="optional">
+        <input id="fileInput" type="file" accept=".json,application/json" multiple>
+        <div id="status" class="status">No files loaded.</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="grid cards" id="cards"></section>
+    <section class="grid charts">
+      <div class="panel">
+        <h2>Latency p95</h2>
+        <svg id="latencyChart" role="img" aria-label="Latency p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>TTFT p95</h2>
+        <svg id="ttftChart" role="img" aria-label="TTFT p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Approximate ITL p95</h2>
+        <svg id="itlChart" role="img" aria-label="Approximate ITL p95 chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Requests per Second</h2>
+        <svg id="rpsChart" role="img" aria-label="Requests per second chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Approx Output Tokens per Second</h2>
+        <svg id="tokenChart" role="img" aria-label="Output token estimate chart"></svg>
+      </div>
+      <div class="panel">
+        <h2>Estimated Run Cost</h2>
+        <svg id="costChart" role="img" aria-label="Estimated cost chart"></svg>
+      </div>
+      <div class="panel wide">
+        <h2>Comparison Table</h2>
+        <div id="table"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const colors = ["#2f6f9f", "#3f7f5f", "#9a6b2f", "#ad4d4d", "#725c9f", "#4d7380"];
+    const state = { rows: [] };
+
+    const get = (obj, path) => path.split(".").reduce((current, key) => {
+      return current && current[key] !== undefined ? current[key] : null;
+    }, obj);
+
+    const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
+    function formatSeconds(value) {
+      if (!isFiniteNumber(value)) return "n/a";
+      if (value < 1) return `${(value * 1000).toFixed(1)} ms`;
+      return `${value.toFixed(2)} s`;
+    }
+
+    function formatNumber(value) {
+      if (!isFiniteNumber(value)) return "n/a";
+      return value.toFixed(2);
+    }
+
+    function formatUsd(value) {
+      if (!isFiniteNumber(value)) return "n/a";
+      if (value < 0.01) return `$${value.toFixed(4)}`;
+      return `$${value.toFixed(2)}`;
+    }
+
+    function normalize(fileName, data) {
+      const summary = data.summary || data;
+      const hourlyCost = Number.parseFloat(document.getElementById("hourlyCost").value);
+      const hourlyCostUsd = Number.isFinite(hourlyCost) ? hourlyCost : summary.hourly_cost_usd;
+      const wallSeconds = summary.wall_seconds ?? null;
+      const approxOutputTokens = summary.approx_output_tokens ?? null;
+      const estimatedRunCostUsd = summary.estimated_run_cost_usd ?? estimateRunCost(wallSeconds, hourlyCostUsd);
+      const estimatedCostPerMillionOutputTokensUsd =
+        summary.estimated_cost_per_million_output_tokens_usd ??
+        estimateCostPerMillionTokens(estimatedRunCostUsd, approxOutputTokens);
+
+      return {
+        fileName,
+        experiment: summary.experiment || fileName.replace(/\.json$/i, ""),
+        model: summary.model || "n/a",
+        requests: summary.requests ?? null,
+        successfulRequests: summary.successful_requests ?? null,
+        concurrency: summary.concurrency ?? null,
+        wallSeconds,
+        requestsPerSecond: summary.requests_per_second ?? null,
+        outputCharsPerSecond: summary.output_chars_per_second ?? null,
+        approxOutputTokens,
+        approxOutputTokensPerSecond: summary.approx_output_tokens_per_second ?? null,
+        latencyP50: get(summary, "latency_seconds.p50") ?? summary.latency_p50_seconds,
+        latencyP95: get(summary, "latency_seconds.p95") ?? summary.latency_p95_seconds,
+        latencyP99: get(summary, "latency_seconds.p99") ?? summary.latency_p99_seconds,
+        ttftP50: get(summary, "ttft_seconds.p50") ?? summary.ttft_p50_seconds,
+        ttftP95: get(summary, "ttft_seconds.p95") ?? summary.ttft_p95_seconds,
+        ttftP99: get(summary, "ttft_seconds.p99") ?? summary.ttft_p99_seconds,
+        itlP50: get(summary, "approx_itl_seconds.p50") ?? summary.approx_itl_p50_seconds,
+        itlP95: get(summary, "approx_itl_seconds.p95") ?? summary.approx_itl_p95_seconds,
+        itlP99: get(summary, "approx_itl_seconds.p99") ?? summary.approx_itl_p99_seconds,
+        estimatedRunCostUsd,
+        estimatedCostPerMillionOutputTokensUsd
+      };
+    }
+
+    function estimateRunCost(wallSeconds, hourlyCostUsd) {
+      if (!isFiniteNumber(wallSeconds) || !isFiniteNumber(hourlyCostUsd)) return null;
+      return (wallSeconds / 3600) * hourlyCostUsd;
+    }
+
+    function estimateCostPerMillionTokens(runCost, approxOutputTokens) {
+      if (!isFiniteNumber(runCost) || !isFiniteNumber(approxOutputTokens) || approxOutputTokens <= 0) return null;
+      return runCost / (approxOutputTokens / 1000000);
+    }
+
+    async function loadFiles(files) {
+      const parsed = [];
+      const errors = [];
+      for (const file of files) {
+        try {
+          const data = JSON.parse(await file.text());
+          if (Array.isArray(data)) {
+            data.forEach((row, index) => parsed.push(normalize(`${file.name}#${index + 1}`, row)));
+          } else {
+            parsed.push(normalize(file.name, data));
+          }
+        } catch (error) {
+          errors.push(`${file.name}: ${error.message}`);
+        }
+      }
+      state.rows = parsed.sort((a, b) => a.experiment.localeCompare(b.experiment));
+      render();
+      document.getElementById("status").textContent = errors.length
+        ? `Loaded ${parsed.length} file(s). ${errors.length} failed.`
+        : `Loaded ${parsed.length} file(s).`;
+      if (errors.length) console.warn(errors.join("\n"));
+    }
+
+    function minBy(rows, key) {
+      return rows.filter((row) => isFiniteNumber(row[key])).sort((a, b) => a[key] - b[key])[0] || null;
+    }
+
+    function maxBy(rows, key) {
+      return rows.filter((row) => isFiniteNumber(row[key])).sort((a, b) => b[key] - a[key])[0] || null;
+    }
+
+    function render() {
+      renderCards();
+      renderBarChart("latencyChart", "latencyP95", "Latency p95", formatSeconds);
+      renderBarChart("ttftChart", "ttftP95", "TTFT p95", formatSeconds);
+      renderBarChart("itlChart", "itlP95", "Approx ITL p95", formatSeconds);
+      renderBarChart("rpsChart", "requestsPerSecond", "Req/s", formatNumber);
+      renderBarChart("tokenChart", "approxOutputTokensPerSecond", "Approx tok/s", formatNumber);
+      renderBarChart("costChart", "estimatedRunCostUsd", "Run cost", formatUsd);
+      renderTable();
+    }
+
+    function renderCards() {
+      const cards = document.getElementById("cards");
+      if (!state.rows.length) {
+        cards.innerHTML = `<div class="card"><div class="label">Getting started</div><div class="hint">Choose benchmark JSON files from results/raw/.</div></div>`;
+        return;
+      }
+      cards.innerHTML = [
+        metricCard("Best latency p95", minBy(state.rows, "latencyP95"), "latencyP95", formatSeconds),
+        metricCard("Best TTFT p95", minBy(state.rows, "ttftP95"), "ttftP95", formatSeconds),
+        metricCard("Best throughput", maxBy(state.rows, "requestsPerSecond"), "requestsPerSecond", (v) => `${formatNumber(v)} req/s`),
+        metricCard("Lowest run cost", minBy(state.rows, "estimatedRunCostUsd"), "estimatedRunCostUsd", formatUsd)
+      ].join("");
+    }
+
+    function metricCard(label, row, key, formatter) {
+      if (!row) return `<div class="card"><div class="label">${label}</div><div class="value">n/a</div></div>`;
+      return `<div class="card"><div class="label">${label}</div><div class="value">${formatter(row[key])}</div><div class="hint">${escapeHtml(row.experiment)}</div></div>`;
+    }
+
+    function renderBarChart(id, key, label, formatter) {
+      const svg = document.getElementById(id);
+      svg.innerHTML = "";
+      if (!state.rows.length) {
+        svg.innerHTML = `<text class="empty" x="50%" y="50%" text-anchor="middle">Load benchmark JSON files to render this chart.</text>`;
+        return;
+      }
+      const width = svg.clientWidth || 540;
+      const height = 280;
+      const margin = { top: 18, right: 24, bottom: 88, left: 58 };
+      const chartWidth = width - margin.left - margin.right;
+      const chartHeight = height - margin.top - margin.bottom;
+      const values = state.rows.map((row) => isFiniteNumber(row[key]) ? row[key] : 0);
+      const maxValue = Math.max(...values, 0.000001);
+      const barGap = 12;
+      const barWidth = Math.max(18, (chartWidth - barGap * (state.rows.length - 1)) / state.rows.length);
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.appendChild(line(margin.left, margin.top, margin.left, margin.top + chartHeight, "axis"));
+      svg.appendChild(line(margin.left, margin.top + chartHeight, margin.left + chartWidth, margin.top + chartHeight, "axis"));
+      for (let i = 0; i <= 4; i += 1) {
+        const value = (maxValue / 4) * i;
+        const y = margin.top + chartHeight - (value / maxValue) * chartHeight;
+        svg.appendChild(line(margin.left, y, margin.left + chartWidth, y, "gridline"));
+        svg.appendChild(text(margin.left - 8, y + 4, formatter(value), "tick", "end"));
+      }
+      state.rows.forEach((row, index) => {
+        const value = isFiniteNumber(row[key]) ? row[key] : 0;
+        const x = margin.left + index * (barWidth + barGap);
+        const h = (value / maxValue) * chartHeight;
+        const y = margin.top + chartHeight - h;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", x);
+        rect.setAttribute("y", y);
+        rect.setAttribute("width", barWidth);
+        rect.setAttribute("height", h);
+        rect.setAttribute("rx", 3);
+        rect.setAttribute("fill", colors[index % colors.length]);
+        svg.appendChild(rect);
+        svg.appendChild(text(x + barWidth / 2, y - 6, formatter(value), "bar-label", "middle"));
+        svg.appendChild(rotatedText(x + barWidth / 2, margin.top + chartHeight + 18, shorten(row.experiment), "tick"));
+      });
+      svg.appendChild(text(width - margin.right, 18, label, "legend", "end"));
+    }
+
+    function line(x1, y1, x2, y2, className) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      el.setAttribute("x1", x1);
+      el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2);
+      el.setAttribute("y2", y2);
+      el.setAttribute("class", className);
+      return el;
+    }
+
+    function text(x, y, value, className, anchor = "start") {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      el.setAttribute("x", x);
+      el.setAttribute("y", y);
+      el.setAttribute("class", className);
+      el.setAttribute("text-anchor", anchor);
+      el.textContent = value;
+      return el;
+    }
+
+    function rotatedText(x, y, value, className) {
+      const el = text(x, y, value, className, "end");
+      el.setAttribute("transform", `rotate(-38 ${x} ${y})`);
+      return el;
+    }
+
+    function renderTable() {
+      const target = document.getElementById("table");
+      if (!state.rows.length) {
+        target.innerHTML = `<div class="empty">Load benchmark JSON files to render the comparison table.</div>`;
+        return;
+      }
+      const rows = state.rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.experiment)}</td>
+          <td>${escapeHtml(row.model)}</td>
+          <td>${row.concurrency ?? "n/a"}</td>
+          <td>${row.requests ?? "n/a"}</td>
+          <td>${formatSeconds(row.latencyP95)}</td>
+          <td>${formatSeconds(row.ttftP95)}</td>
+          <td>${formatSeconds(row.itlP95)}</td>
+          <td>${formatNumber(row.requestsPerSecond)}</td>
+          <td>${formatNumber(row.approxOutputTokensPerSecond)}</td>
+          <td>${formatUsd(row.estimatedRunCostUsd)}</td>
+          <td>${formatUsd(row.estimatedCostPerMillionOutputTokensUsd)}</td>
+        </tr>
+      `).join("");
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Experiment</th>
+              <th>Model</th>
+              <th>Concurrency</th>
+              <th>Requests</th>
+              <th>Latency p95</th>
+              <th>TTFT p95</th>
+              <th>Approx ITL p95</th>
+              <th>Req/s</th>
+              <th>Approx tok/s</th>
+              <th>Run cost</th>
+              <th>Cost / 1M out toks</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function shorten(value) {
+      return value.length > 28 ? `${value.slice(0, 25)}...` : value;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    document.getElementById("fileInput").addEventListener("change", (event) => {
+      loadFiles(Array.from(event.target.files || []));
+    });
+
+    document.getElementById("hourlyCost").addEventListener("change", () => {
+      const files = Array.from(document.getElementById("fileInput").files || []);
+      if (files.length) loadFiles(files);
+    });
+
+    render();
+  </script>
+</body>
+</html>

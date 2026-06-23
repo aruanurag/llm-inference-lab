@@ -1,0 +1,3 @@
+You are helping someone understand GPU-backed LLM inference with vLLM.
+
+Explain how prefill and decode behave differently during serving. Include the role of prompt length, KV cache memory, continuous batching, GPU utilization, and why tail latency can increase under concurrency. Keep the explanation practical and focused on what someone should observe while benchmarking a vLLM OpenAI-compatible server on a single OCI GPU instance.

@@ -16,7 +16,7 @@ This lab series moves from theory to practical observation:
 - change one variable at a time
 - record what changed and why it might have changed
 
-## Current Lab
+## Labs
 
 ### Lab 1: Local LLM Serving on Apple Silicon
 
@@ -27,6 +27,14 @@ vLLM is still an important serving system to study, but Apple Silicon support is
 Start here:
 
 [labs/01-local-llm-serving-apple-silicon/README.md](labs/01-local-llm-serving-apple-silicon/README.md)
+
+### Lab 2: Running vLLM on OCI GPU
+
+The second lab moves from local inference to a GPU-backed vLLM deployment on OCI. It covers provisioning a GPU instance, installing vLLM, exposing an OpenAI-compatible endpoint, measuring GPU-backed inference behavior, monitoring `nvidia-smi`, and estimating experiment cost.
+
+Start here:
+
+[labs/02-vllm-on-oci/README.md](labs/02-vllm-on-oci/README.md)
 
 ## Repository Structure
 
@@ -40,6 +48,15 @@ llm-inference-lab/
 │   │   ├── run.sh
 │   │   ├── benchmark.py
 │   │   ├── collect_metrics.py
+│   │   └── results/
+│   ├── 02-vllm-on-oci/
+│   │   ├── README.md
+│   │   ├── setup.md
+│   │   ├── run_vllm.sh
+│   │   ├── benchmark.py
+│   │   ├── collect_metrics.py
+│   │   ├── observations.md
+│   │   ├── results_dashboard.html
 │   │   └── results/
 │   └── templates/
 ├── notes/
