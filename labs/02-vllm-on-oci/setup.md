@@ -93,6 +93,12 @@ If the instance uses Oracle Linux, use `dnf`:
 sudo dnf install -y python3 python3-pip git curl jq
 ```
 
+If `dnf` fails on an optional repository such as `ol9_ksplice`, disable that repository for this install:
+
+```bash
+sudo dnf --disablerepo=ol9_ksplice install -y python3 python3-pip git curl jq
+```
+
 If `dnf` is not available but `yum` is:
 
 ```bash
@@ -100,6 +106,15 @@ sudo yum install -y python3 python3-pip git curl jq
 ```
 
 On Oracle Linux, the Python `venv` module is usually included with Python 3. If `python3 -m venv .venv` fails in the next step, install the matching Python venv package for your image or use a Conda/Mambaforge environment.
+
+If package metadata downloads time out, confirm the instance has outbound HTTPS access:
+
+```bash
+curl -I https://yum.us-ashburn-1.oci.oraclecloud.com/
+curl -I https://github.com/
+```
+
+If those commands time out, check the subnet route table and security rules. A private subnet needs a NAT gateway or service gateway. A public subnet needs an internet gateway, a route to it, and outbound security rules that allow TCP `443`.
 
 ## Step 5: Create a Python Environment
 
@@ -129,7 +144,7 @@ vllm serve --help
 If `vllm serve` is not available, try:
 
 ```bash
-python -m vllm.entrypoints.openai.api_server --help
+c
 ```
 
 ## Step 7: Copy This Lab to the Instance

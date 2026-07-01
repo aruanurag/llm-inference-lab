@@ -22,6 +22,10 @@ env/
 
 # Node / frontend packages, if future dashboards or apps use them
 node_modules/
+dist/
+build/
+.next/
+out/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -31,6 +35,21 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+
+# Local credentials, app state, and exported experiment bundles
+.llm-inference-cloud/
+**/.llm-inference-cloud/
+oci-inference-cloud-dev/
+**/state.db
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.p8
+id_rsa*
+id_ed25519*
+*-export.json
 
 # Local model weights are usually large and should not be committed.
 models/

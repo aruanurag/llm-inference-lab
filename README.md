@@ -36,6 +36,26 @@ Start here:
 
 [labs/02-vllm-on-oci/README.md](labs/02-vllm-on-oci/README.md)
 
+## Apps
+
+### OCI Inference Cloud
+
+A local hackathon workbench for provisioning OCI CPU instances, deploying `llama.cpp`, exposing a private CPU inference endpoint through a local proxy, running benchmarks, and handing participants sample apps that compare direct CPU inference with rule-based routing to OpenAI.
+
+Start here:
+
+[apps/oci-inference-cloud/README.md](apps/oci-inference-cloud/README.md)
+
+Follow the full lab guide:
+
+[docs/inference-cloud-lab-guide.md](docs/inference-cloud-lab-guide.md)
+
+## Examples
+
+- [examples/direct-cpu-chat/README.md](examples/direct-cpu-chat/README.md): calls the generated CPU endpoint directly.
+- [examples/router-chat/README.md](examples/router-chat/README.md): routes simple requests to CPU inference and heavier requests to OpenAI.
+- [docs/cpu-inference-good-enough.md](docs/cpu-inference-good-enough.md): participant explainer for when CPU inference is enough.
+
 ## Repository Structure
 
 ```text
@@ -61,6 +81,8 @@ llm-inference-lab/
 │   └── templates/
 ├── notes/
 ├── results/
+├── apps/
+│   └── oci-inference-cloud/
 ├── scripts/
 └── docs/
 ```
