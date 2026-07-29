@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, AlertCircle, CheckCircle2, Circle, Cloud, Info, KeyRound, Loader2, Play, RefreshCcw, Rocket, Server, Upload } from "lucide-react";
+import { Activity, AlertCircle, CheckCircle2, Circle, Cloud, Download, Info, KeyRound, Loader2, Play, RefreshCcw, Rocket, Server, Upload } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -10,11 +10,11 @@ import {
   YAxis
 } from "recharts";
 import { api } from "./api";
-import type { BenchmarkRecord, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, Option, Profile, PromptSet, SshKeyRecord } from "./types";
+import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDPlan, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 type Status = { kind: "idle" | "loading" | "error" | "ok"; message: string };
-type ActiveAction = "idle" | "load" | "provision" | "deploy" | "benchmark" | "endpoint";
-type View = "setup" | "benchmarks" | "hackathon";
+type ActiveAction = "idle" | "load" | "provision" | "deploy" | "benchmark" | "endpoint" | "llmd";
+type View = "setup" | "benchmarks" | "hackathon" | "llmd";
 type BenchmarkPreset = {
   id: string;
   name: string;
@@ -28,6 +28,7 @@ type BenchmarkPreset = {
   promptHint: string;
   comparisonGroup: string;
 };
+type SettingHelp = { title: string; detail: string; measure: string };
 
 const emptyStatus: Status = { kind: "idle", message: "Ready." };
 
@@ -104,6 +105,30 @@ const LANE_OPTIONS = [
   { id: "comparison", name: "Comparison run", description: "Use this for the second model, shape, or deploy setting." },
   { id: "custom", name: "Custom", description: "Use when the run needs its own label." },
 ];
+
+const LLMD_MODEL_OPTIONS = [
+  { id: "Qwen/Qwen2.5-1.5B-Instruct", name: "Qwen 2.5 1.5B Instruct", detail: "Public · recommended first CPU run" },
+  { id: "Qwen/Qwen2.5-3B-Instruct", name: "Qwen 2.5 3B Instruct", detail: "Public · larger CPU comparison" },
+  { id: "HuggingFaceTB/SmolLM2-1.7B-Instruct", name: "SmolLM2 1.7B Instruct", detail: "Public · small alternative" },
+  { id: "custom", name: "Custom Hugging Face model", detail: "Use for a gated or other supported model" },
+];
+
+const LLMD_SETTING_HELP: Record<string, SettingHelp> = {
+  checkout: { title: "LLM-D checkout", detail: "The local, pinned LLM-D source tree used for the router values and CPU vLLM base recipe. Keep the revision fixed while comparing runs.", measure: "Record the commit SHA with every benchmark." },
+  release: { title: "Helm release", detail: "The name of the LLM-D router installation in this namespace. Redeploying upgrades this same release rather than creating another router.", measure: "Do not change it within one experiment." },
+  model: { title: "Public model", detail: "The Hugging Face model loaded by each CPU vLLM replica. Smaller models are better for fast functional tests; larger models make CPU and routing tradeoffs easier to see.", measure: "Hold the model constant when comparing serving parameters." },
+  replicas: { title: "Replicas", detail: "The number of CPU vLLM model-server pods in LLM-D's inference pool. LLM-D routes each request to a healthy replica.", measure: "Compare requests/sec, p95 latency, and time for a new replica to become Ready." },
+  cpu: { title: "CPU per replica", detail: "Kubernetes CPU requested and limited for each vLLM pod. It is measured in CPU cores, not OCI OCPUs.", measure: "Increase it only when the node has headroom; compare TTFT and decode throughput." },
+  memory: { title: "Memory GiB per replica", detail: "Kubernetes memory requested and limited for each vLLM pod. It must accommodate model weights, runtime overhead, and the configured CPU KV cache.", measure: "Watch pod restarts and OOM events before interpreting performance." },
+  kvCache: { title: "CPU KV cache GiB", detail: "Memory vLLM reserves for attention key/value cache. More cache can support more active or longer requests, but consumes node memory.", measure: "Compare queueing, p95 latency, and repeated-prefix behavior." },
+  maxModelLen: { title: "Max model length", detail: "Maximum prompt plus generated-token context accepted by vLLM. Higher values increase possible KV-cache demand.", measure: "Use long-prompt TTFT tests to measure the tradeoff." },
+  maxSeqs: { title: "Max concurrent sequences", detail: "Maximum number of sequences vLLM schedules at once. Raising it can improve aggregate throughput but may increase queueing and tail latency on CPU.", measure: "Run the same concurrency sweep at 1, 4, and 8 clients." },
+  batchedTokens: { title: "Max batched tokens", detail: "Upper bound on tokens vLLM admits into one scheduling iteration. It is a continuous-batching capacity limit.", measure: "Compare throughput and TTFT on long prompts under concurrency." },
+  reservedCpu: { title: "Reserved CPU cores", detail: "CPU cores vLLM keeps aside for orchestration and non-model work. Too little headroom can cause contention; too much reduces model compute capacity.", measure: "Change this only after establishing a stable CPU baseline." },
+  threadBind: { title: "AMD CPU thread binding", detail: "Optional vLLM OpenMP thread binding, for example `0-14`. Leave it empty initially; explicit IDs must match the CPU set and NUMA layout visible inside the pod.", measure: "Use only after inspecting CPU affinity; otherwise automatic placement is safer." },
+  prefixCache: { title: "Prefix caching", detail: "Lets vLLM reuse matching prompt prefixes. LLM-D can make routing decisions that benefit from cache locality when replicas expose the relevant metrics.", measure: "Use repeated shared-prefix prompts and compare TTFT with it on and off." },
+  hfToken: { title: "Hugging Face token", detail: "Only needed to download gated Hugging Face models. Public Qwen and SmolLM options do not require it.", measure: "This is an access setting, not a performance knob." },
+};
 
 type ShapeFamily = "cpu" | "gpu" | "all";
 
@@ -186,6 +211,15 @@ export function App() {
   const [promptSets, setPromptSets] = useState<PromptSet[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkRecord[]>([]);
   const [endpointStatus, setEndpointStatus] = useState<EndpointStatus | null>(null);
+  const [kubernetesContexts, setKubernetesContexts] = useState<KubernetesContext[]>([]);
+  const [clusterValidation, setClusterValidation] = useState<ClusterValidation | null>(null);
+  const [llmdPlan, setLlmdPlan] = useState<LlmDPlan | null>(null);
+  const [llmdCheckout, setLlmdCheckout] = useState<LlmDCheckout | null>(null);
+  const [llmdEndpointStatus, setLlmdEndpointStatus] = useState<LlmDEndpointStatus | null>(null);
+  const [llmdInferenceResponse, setLlmdInferenceResponse] = useState<Record<string, any> | null>(null);
+  const [llmdBenchmarkResult, setLlmdBenchmarkResult] = useState<LlmDBenchmarkResult | null>(null);
+  const [llmdBenchmarks, setLlmdBenchmarks] = useState<LlmDBenchmarkRecord[]>([]);
+  const [llmdSettingHelp, setLlmdSettingHelp] = useState<SettingHelp | null>(null);
 
   const [profile, setProfile] = useState("");
   const [region, setRegion] = useState("");
@@ -224,6 +258,28 @@ export function App() {
   const [experimentName, setExperimentName] = useState(`Inference throughput research ${new Date().toLocaleDateString()}`);
   const [experimentDescription, setExperimentDescription] = useState("Compare models, shapes, and deploy settings using repeatable benchmark presets.");
   const [selectedExperimentId, setSelectedExperimentId] = useState("");
+  const [experimentKind, setExperimentKind] = useState("cpu-instance");
+  const [kubeContext, setKubeContext] = useState("");
+  const [llmdNamespace, setLlmdNamespace] = useState("llm-d-lab");
+  const [llmdRepoPath, setLlmdRepoPath] = useState("~/.llm-inference-cloud/llm-d/source");
+  const [llmdReleaseName, setLlmdReleaseName] = useState("llm-d-lab");
+  const [llmdModel, setLlmdModel] = useState("Qwen/Qwen2.5-1.5B-Instruct");
+  const [llmdModelChoice, setLlmdModelChoice] = useState("Qwen/Qwen2.5-1.5B-Instruct");
+  const [llmdReplicas, setLlmdReplicas] = useState(1);
+  const [llmdCpu, setLlmdCpu] = useState(16);
+  const [llmdMemoryGib, setLlmdMemoryGib] = useState(32);
+  const [llmdKvCacheGib, setLlmdKvCacheGib] = useState(8);
+  const [llmdMaxModelLen, setLlmdMaxModelLen] = useState(4096);
+  const [llmdMaxNumSeqs, setLlmdMaxNumSeqs] = useState(8);
+  const [llmdMaxBatchedTokens, setLlmdMaxBatchedTokens] = useState(2048);
+  const [llmdCpuThreadsBind, setLlmdCpuThreadsBind] = useState("");
+  const [llmdReservedCpu, setLlmdReservedCpu] = useState(1);
+  const [llmdPrefixCaching, setLlmdPrefixCaching] = useState(true);
+  const [llmdHfToken, setLlmdHfToken] = useState("");
+  const [llmdPrompt, setLlmdPrompt] = useState("Explain in two sentences why LLM-D is useful when serving multiple vLLM replicas.");
+  const [llmdBenchmarkConcurrency, setLlmdBenchmarkConcurrency] = useState(1);
+  const [llmdBenchmarkRequests, setLlmdBenchmarkRequests] = useState(8);
+  const [llmdBenchmarkTokens, setLlmdBenchmarkTokens] = useState(128);
 
   const activeExperiment = useMemo(
     () => experiments.find((item) => String(item.id) === selectedExperimentId),
@@ -272,6 +328,10 @@ export function App() {
   const endpointRunning = endpointStatus?.status === "running" && endpointStatus?.healthy;
   const endpointUrl = endpointStatus?.proxy_url || (activeExperiment ? `http://127.0.0.1:8090/api/experiments/${activeExperiment.id}/endpoint/v1` : "");
   const endpointAnalytics = endpointStatus?.analytics || {};
+  const isLlmDExperiment = activeExperiment?.kind === "llm-d-cluster";
+  const llmdDeployed = activeExperiment?.status === "llm-d-deployed" || activeExperiment?.status === "llm-d-benchmarked";
+  const llmdEndpointRunning = Boolean(llmdEndpointStatus?.healthy);
+  const llmdBenchmarked = Boolean(llmdBenchmarkResult) || activeExperiment?.status === "llm-d-benchmarked";
   const workflowSteps = [
     {
       title: "Load OCI",
@@ -304,6 +364,33 @@ export function App() {
       state: activeAction === "endpoint" ? "active" : endpointRunning ? "done" : hasDeployed ? "ready" : "todo"
     }
   ];
+  const llmdWorkflowSteps = [
+    {
+      title: "Cluster access",
+      detail: clusterValidation ? `${clusterValidation.ready_nodes}/${clusterValidation.total_nodes} nodes Ready · ${clusterValidation.cpu_cores.toFixed(1)} CPU` : "Select and validate the existing CPU cluster",
+      state: clusterValidation ? "done" : activeAction === "llmd" ? "active" : "ready",
+    },
+    {
+      title: "LLM-D sources",
+      detail: llmdCheckout ? `Pinned at ${llmdCheckout.revision.slice(0, 12)}` : "Get or select the LLM-D checkout",
+      state: llmdCheckout ? "done" : activeAction === "llmd" ? "active" : clusterValidation ? "ready" : "todo",
+    },
+    {
+      title: "Deploy",
+      detail: llmdDeployed ? "Router and CPU vLLM model pool deployed" : "Apply the LLM-D CPU vLLM configuration",
+      state: llmdDeployed ? "done" : activeAction === "llmd" ? "active" : clusterValidation ? "ready" : "todo",
+    },
+    {
+      title: "Endpoint",
+      detail: llmdEndpointRunning ? llmdEndpointStatus?.endpoint_url || "Local endpoint running" : "Start the local LLM-D endpoint",
+      state: llmdEndpointRunning ? "done" : activeAction === "endpoint" ? "active" : llmdDeployed ? "ready" : "todo",
+    },
+    {
+      title: "Benchmark",
+      detail: llmdBenchmarked ? "Benchmark result saved" : "Run the selected workload through LLM-D",
+      state: llmdBenchmarked ? "done" : activeAction === "benchmark" ? "active" : llmdEndpointRunning ? "ready" : "todo",
+    },
+  ];
 
   async function loadInitial() {
     setActiveAction("load");
@@ -325,6 +412,13 @@ export function App() {
       setPromptSets(promptList);
       setBenchmarks(benchmarkList);
       setDeployModels(deployModelList);
+      try {
+        const contexts = await api.kubernetesContexts();
+        setKubernetesContexts(contexts);
+        if (!kubeContext && contexts[0]) setKubeContext(contexts[0].name);
+      } catch {
+        // Kubernetes is optional for the existing OCI CPU workflow.
+      }
       if (!profile && profileList[0]) {
         setProfile(profileList[0].name);
         setRegion(profileList[0].region || "");
@@ -348,14 +442,15 @@ export function App() {
     setActiveAction("load");
     setStatus({ kind: "loading", message: "Creating experiment." });
     try {
-      const experiment = await api.createExperiment({ name: experimentName, description: experimentDescription });
+      const experiment = await api.createExperiment({ name: experimentName, description: experimentDescription, kind: experimentKind });
       const experimentList = await api.experiments();
       setExperiments(experimentList);
       setSelectedExperimentId(String(experiment.id));
-      setView("setup");
-      setStatus({ kind: "ok", message: `Experiment created: ${experiment.name}. Continue with OCI setup.` });
+      setView(experiment.kind === "llm-d-cluster" ? "llmd" : "setup");
+      setStatus({ kind: "ok", message: experiment.kind === "llm-d-cluster" ? `Experiment created: ${experiment.name}. Connect the existing cluster.` : `Experiment created: ${experiment.name}. Continue with OCI setup.` });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      await loadLlmDBenchmarks();
     } finally {
       setActiveAction("idle");
     }
@@ -402,6 +497,10 @@ export function App() {
 
   useEffect(() => {
     if (!activeExperiment) return;
+    if (activeExperiment.kind === "llm-d-cluster") {
+      setView("llmd");
+      return;
+    }
     if (activeExperiment.status === "deployed" || activeExperiment.status === "benchmarked") {
       setView("benchmarks");
     } else {
@@ -412,6 +511,12 @@ export function App() {
   useEffect(() => {
     if (!activeExperiment) {
       setEndpointStatus(null);
+      setLlmdEndpointStatus(null);
+      return;
+    }
+    if (activeExperiment.kind === "llm-d-cluster") {
+      refreshLlmDEndpoint(false);
+      loadLlmDBenchmarks();
       return;
     }
     refreshEndpoint(false);
@@ -845,6 +950,185 @@ export function App() {
     }
   }
 
+  function llmdPayload() {
+    return {
+      context: kubeContext,
+      namespace: llmdNamespace,
+      llmd_repo_path: llmdRepoPath,
+      release_name: llmdReleaseName,
+      model: llmdModel,
+      replicas: llmdReplicas,
+      cpu: llmdCpu,
+      memory_gib: llmdMemoryGib,
+      kv_cache_gib: llmdKvCacheGib,
+      max_model_len: llmdMaxModelLen,
+      max_num_seqs: llmdMaxNumSeqs,
+      max_num_batched_tokens: llmdMaxBatchedTokens,
+      cpu_threads_bind: llmdCpuThreadsBind || null,
+      reserved_cpu: llmdReservedCpu,
+      enable_prefix_caching: llmdPrefixCaching,
+      hf_token: llmdHfToken || null,
+    };
+  }
+
+  async function validateCluster() {
+    if (!kubeContext) {
+      setStatus({ kind: "error", message: "Select a Kubernetes context first." });
+      return;
+    }
+    setActiveAction("llmd");
+    setStatus({ kind: "loading", message: "Checking cluster access, nodes, kubectl, and Helm." });
+    try {
+      const result = await api.validateKubernetes({ context: kubeContext, namespace: llmdNamespace });
+      setClusterValidation(result);
+      setStatus({ kind: "ok", message: `Cluster reachable: ${result.ready_nodes}/${result.total_nodes} nodes Ready.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function planLlmDDeployment() {
+    if (!activeExperiment) return;
+    setActiveAction("llmd");
+    setStatus({ kind: "loading", message: "Rendering the pinned LLM-D CPU vLLM overlay and deployment plan." });
+    try {
+      const plan = await api.planLlmD(activeExperiment.id, llmdPayload());
+      setLlmdPlan(plan);
+      setStatus({ kind: "ok", message: `Deployment plan ready. Overlay: ${plan.overlay_path}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function prepareLlmDCheckout() {
+    setActiveAction("llmd");
+    setStatus({ kind: "loading", message: "Preparing a pinned local checkout of the official LLM-D sources." });
+    try {
+      const checkout = await api.prepareLlmDCheckout(llmdRepoPath);
+      setLlmdCheckout(checkout);
+      setLlmdRepoPath(checkout.path);
+      setStatus({ kind: "ok", message: `LLM-D ${checkout.status}: ${checkout.revision.slice(0, 12)}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function deployLlmD() {
+    if (!activeExperiment) return;
+    setActiveAction("llmd");
+    setStatus({ kind: "loading", message: "Installing LLM-D prerequisites, router, and CPU vLLM model pool. Model startup can take several minutes." });
+    try {
+      const result = await api.deployLlmD(activeExperiment.id, llmdPayload());
+      setLlmdPlan(result.plan);
+      const experimentList = await api.experiments();
+      setExperiments(experimentList);
+      const endpoint = await api.startLlmDEndpoint(activeExperiment.id);
+      setLlmdEndpointStatus(endpoint);
+      setStatus({ kind: "ok", message: `${result.message} Local endpoint: ${endpoint.endpoint_url || "starting"}. Log: ${result.log_path}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function refreshLlmDEndpoint(showStatus = true) {
+    if (!activeExperiment) return;
+    try {
+      const result = await api.llmdEndpoint(activeExperiment.id);
+      setLlmdEndpointStatus(result);
+      if (showStatus) setStatus({ kind: "ok", message: `LLM-D endpoint ${result.status}.` });
+    } catch (error) {
+      if (showStatus) setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function startLlmDEndpoint() {
+    if (!activeExperiment) return;
+    setActiveAction("endpoint");
+    setStatus({ kind: "loading", message: "Starting a local port-forward to the LLM-D router." });
+    try {
+      const result = await api.startLlmDEndpoint(activeExperiment.id);
+      setLlmdEndpointStatus(result);
+      setStatus({ kind: "ok", message: `LLM-D endpoint ready at ${result.endpoint_url}.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function stopLlmDEndpoint() {
+    if (!activeExperiment) return;
+    setActiveAction("endpoint");
+    try {
+      const result = await api.stopLlmDEndpoint(activeExperiment.id);
+      setLlmdEndpointStatus(result);
+      setStatus({ kind: "ok", message: "Stopped the local LLM-D endpoint." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function runLlmDInference() {
+    if (!activeExperiment) return;
+    setActiveAction("endpoint");
+    setStatus({ kind: "loading", message: "Sending a test request through LLM-D to CPU vLLM." });
+    try {
+      const response = await api.inferLlmD(activeExperiment.id, { prompt: llmdPrompt, max_tokens: llmdBenchmarkTokens, temperature: 0 });
+      setLlmdInferenceResponse(response);
+      await refreshLlmDEndpoint(false);
+      setStatus({ kind: "ok", message: "Inference response received through the LLM-D endpoint." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function runLlmDBenchmark() {
+    if (!activeExperiment) return;
+    setActiveAction("benchmark");
+    setStatus({ kind: "loading", message: "Running the LLM-D CPU vLLM benchmark through the local router endpoint." });
+    try {
+      const result = await api.benchmarkLlmD(activeExperiment.id, {
+        name: `llmd-cpu-c${llmdBenchmarkConcurrency}-r${llmdBenchmarkRequests}`,
+        prompt: llmdPrompt,
+        concurrency: llmdBenchmarkConcurrency,
+        requests: llmdBenchmarkRequests,
+        max_tokens: llmdBenchmarkTokens,
+        temperature: 0,
+      });
+      setLlmdBenchmarkResult(result);
+      setLlmdBenchmarks(await api.llmdBenchmarks(activeExperiment.id));
+      const experimentList = await api.experiments();
+      setExperiments(experimentList);
+      setStatus({ kind: "ok", message: `Benchmark complete. Raw results: ${result.raw_path}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      await loadLlmDBenchmarks();
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function loadLlmDBenchmarks() {
+    if (!activeExperiment) return;
+    try {
+      setLlmdBenchmarks(await api.llmdBenchmarks(activeExperiment.id));
+    } catch {
+      // The list is supplementary; keep the inference workflow usable if it cannot load.
+    }
+  }
+
   const chartRows = useMemo(() => {
     return experimentBenchmarks.map((benchmark) => ({
       name: benchmark.name,
@@ -915,6 +1199,7 @@ export function App() {
             <div className="divider-label">or create a new one</div>
             <label>Name<input value={experimentName} onChange={(event) => setExperimentName(event.target.value)} /></label>
             <label>Description<input value={experimentDescription} onChange={(event) => setExperimentDescription(event.target.value)} /></label>
+            <label>Experiment type<select value={experimentKind} onChange={(event) => setExperimentKind(event.target.value)}><option value="cpu-instance">OCI CPU instance / llama.cpp</option><option value="llm-d-cluster">LLM-D on existing CPU cluster</option></select></label>
             <button className="primary" onClick={createExperiment} disabled={isBusy}><Cloud size={16} /> Create experiment</button>
           </div>
         </section>
@@ -942,19 +1227,138 @@ export function App() {
         <section className="experiment-heading">
           <div>
             <h1>{activeExperiment.name}</h1>
-            <p>{activeExperiment.description || "No description"}</p>
+            <p>{isLlmDExperiment ? "Deploy and tune LLM-D with CPU vLLM replicas on an existing Kubernetes cluster." : activeExperiment.description || "No description"}</p>
           </div>
           <div className="phase-pill">{activeExperiment.status}</div>
         </section>
 
-        <StepRail steps={workflowSteps} />
+        <StepRail steps={isLlmDExperiment ? llmdWorkflowSteps : workflowSteps} />
         <div className={`status ${status.kind}`}><StatusIcon kind={status.kind} /> <span>{status.message}</span></div>
 
         <div className="view-tabs">
-          <button className={view === "setup" ? "selected" : ""} onClick={() => setView("setup")}>Setup</button>
-          <button className={view === "benchmarks" ? "selected" : ""} onClick={() => setView("benchmarks")} disabled={!hasProvisionedInstance}>Benchmarks</button>
-          <button className={view === "hackathon" ? "selected" : ""} onClick={() => setView("hackathon")} disabled={!hasDeployed}>Hackathon</button>
+          {activeExperiment.kind === "llm-d-cluster" ? <button className={view === "llmd" ? "selected" : ""} onClick={() => setView("llmd")}>LLM-D cluster lab</button> : <>
+            <button className={view === "setup" ? "selected" : ""} onClick={() => setView("setup")}>Setup</button>
+            <button className={view === "benchmarks" ? "selected" : ""} onClick={() => setView("benchmarks")} disabled={!hasProvisionedInstance}>Benchmarks</button>
+            <button className={view === "hackathon" ? "selected" : ""} onClick={() => setView("hackathon")} disabled={!hasDeployed}>Hackathon</button>
+          </>}
         </div>
+
+        {view === "llmd" && <>
+          <section className="panel">
+            <h2><KeyRound size={18} /> 1. Connect an existing CPU cluster</h2>
+            <p className="muted">This lab never creates or deletes the Kubernetes cluster. It uses the selected local kubeconfig context and only creates resources in the namespace below.</p>
+            <div className="form-grid">
+              <label>Kubernetes context<select value={kubeContext} onChange={(event) => { setKubeContext(event.target.value); setClusterValidation(null); }}><option value="">Select context</option>{kubernetesContexts.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+              <label>Namespace<input value={llmdNamespace} onChange={(event) => setLlmdNamespace(event.target.value)} /></label>
+              <button onClick={validateCluster} disabled={isBusy || !kubeContext}><RefreshCcw size={16} /> {activeAction === "llmd" ? "Checking" : "Validate cluster"}</button>
+            </div>
+            {clusterValidation && <div className="metrics">
+              <Metric title="Ready nodes" value={`${clusterValidation.ready_nodes}/${clusterValidation.total_nodes}`} />
+              <Metric title="Allocatable CPU" value={clusterValidation.cpu_cores.toFixed(1)} />
+              <Metric title="Allocatable memory" value={`${(clusterValidation.memory_kib / 1024 / 1024).toFixed(1)} GiB`} />
+              <Metric title="Architecture" value={clusterValidation.architectures.join(", ") || "unknown"} />
+              <Metric title="Server" value={clusterValidation.kubectl_version || "unknown"} />
+              <Metric title="Helm" value={clusterValidation.helm_version || "not ready"} />
+            </div>}
+            {clusterValidation?.warnings.map((warning) => <p className="muted" key={warning}>Warning: {warning}</p>)}
+          </section>
+
+          <section className="panel">
+            <h2><Rocket size={18} /> 2. Configure LLM-D and CPU vLLM</h2>
+            <p className="muted">Use a pinned local LLM-D checkout. The workbench layers this experiment’s replica, model, CPU, memory, KV-cache, and context settings over its supported CPU vLLM recipe.</p>
+            <div className="form-grid">
+              <label><ConfigLabel label="LLM-D checkout" help={LLMD_SETTING_HELP.checkout} onShow={setLlmdSettingHelp} /><input value={llmdRepoPath} onChange={(event) => { setLlmdRepoPath(event.target.value); setLlmdCheckout(null); }} placeholder="/absolute/path/to/llm-d" /></label>
+              <button onClick={prepareLlmDCheckout} disabled={isBusy}><Download size={16} /> {activeAction === "llmd" ? "Preparing sources" : "Get official LLM-D sources"}</button>
+              <label><ConfigLabel label="Helm release" help={LLMD_SETTING_HELP.release} onShow={setLlmdSettingHelp} /><input value={llmdReleaseName} onChange={(event) => setLlmdReleaseName(event.target.value)} /></label>
+              <label><ConfigLabel label="Public model" help={LLMD_SETTING_HELP.model} onShow={setLlmdSettingHelp} /><select value={llmdModelChoice} onChange={(event) => { const choice = event.target.value; setLlmdModelChoice(choice); if (choice !== "custom") setLlmdModel(choice); }}>{LLMD_MODEL_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.detail}</option>)}</select></label>
+              {llmdModelChoice === "custom" && <label><ConfigLabel label="Custom Hugging Face model" help={LLMD_SETTING_HELP.model} onShow={setLlmdSettingHelp} /><input value={llmdModel} onChange={(event) => setLlmdModel(event.target.value)} placeholder="organization/model-name" /></label>}
+              <label><ConfigLabel label="Replicas" help={LLMD_SETTING_HELP.replicas} onShow={setLlmdSettingHelp} /><input type="number" min={1} value={llmdReplicas} onChange={(event) => setLlmdReplicas(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="CPU per replica" help={LLMD_SETTING_HELP.cpu} onShow={setLlmdSettingHelp} /><input type="number" min={1} value={llmdCpu} onChange={(event) => setLlmdCpu(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="Memory GiB / replica" help={LLMD_SETTING_HELP.memory} onShow={setLlmdSettingHelp} /><input type="number" min={4} value={llmdMemoryGib} onChange={(event) => setLlmdMemoryGib(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="CPU KV cache GiB" help={LLMD_SETTING_HELP.kvCache} onShow={setLlmdSettingHelp} /><input type="number" min={1} value={llmdKvCacheGib} onChange={(event) => setLlmdKvCacheGib(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="Max model length" help={LLMD_SETTING_HELP.maxModelLen} onShow={setLlmdSettingHelp} /><input type="number" min={256} value={llmdMaxModelLen} onChange={(event) => setLlmdMaxModelLen(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="Max concurrent sequences" help={LLMD_SETTING_HELP.maxSeqs} onShow={setLlmdSettingHelp} /><input type="number" min={1} value={llmdMaxNumSeqs} onChange={(event) => setLlmdMaxNumSeqs(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="Max batched tokens" help={LLMD_SETTING_HELP.batchedTokens} onShow={setLlmdSettingHelp} /><input type="number" min={256} value={llmdMaxBatchedTokens} onChange={(event) => setLlmdMaxBatchedTokens(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="Reserved CPU cores" help={LLMD_SETTING_HELP.reservedCpu} onShow={setLlmdSettingHelp} /><input type="number" min={0} value={llmdReservedCpu} onChange={(event) => setLlmdReservedCpu(Number(event.target.value))} /></label>
+              <label><ConfigLabel label="AMD CPU thread binding" help={LLMD_SETTING_HELP.threadBind} onShow={setLlmdSettingHelp} /><input value={llmdCpuThreadsBind} onChange={(event) => setLlmdCpuThreadsBind(event.target.value)} placeholder="Optional, e.g. 0-14" /></label>
+              <label className="checkbox-row"><input type="checkbox" checked={llmdPrefixCaching} onChange={(event) => setLlmdPrefixCaching(event.target.checked)} /><ConfigLabel label="Enable prefix caching" help={LLMD_SETTING_HELP.prefixCache} onShow={setLlmdSettingHelp} /></label>
+              <label><ConfigLabel label="Hugging Face token (optional)" help={LLMD_SETTING_HELP.hfToken} onShow={setLlmdSettingHelp} /><input type="password" value={llmdHfToken} onChange={(event) => setLlmdHfToken(event.target.value)} placeholder="Only needed for gated models" /></label>
+              <button onClick={planLlmDDeployment} disabled={isBusy || !kubeContext}><Info size={16} /> Render plan</button>
+              <button className="primary" onClick={deployLlmD} disabled={isBusy || !clusterValidation || clusterValidation.ready_nodes === 0}><Play size={16} /> {activeAction === "llmd" ? "Applying" : llmdDeployed ? "Redeploy LLM-D" : "Deploy LLM-D"}</button>
+            </div>
+            {llmdCheckout && <p className="muted">Source revision: <code>{llmdCheckout.revision}</code></p>}
+            {llmdSettingHelp && <div className="info-box setting-help"><Info size={16} /><div><strong>{llmdSettingHelp.title}</strong><span>{llmdSettingHelp.detail}</span><em>Measure: {llmdSettingHelp.measure}</em></div><button onClick={() => setLlmdSettingHelp(null)}>Hide</button></div>}
+            {llmdDeployed && <div className="hint-row"><span><strong>Redeploy:</strong> edit one setting, then click <strong>Redeploy LLM-D</strong>. On a single-node CPU cluster, the app briefly replaces the old CPU vLLM pod before starting the new one so both do not compete for the same CPUs. The router Service and cluster remain in place.</span></div>}
+            <div className="hint-row"><span><strong>AMD tuning:</strong> start with automatic thread placement. Add a thread-binding value only after inspecting the pod CPU set and NUMA topology. Change one setting, redeploy, then rerun the same benchmark.</span></div>
+          </section>
+
+          {llmdPlan && <section className="panel">
+            <h2><Activity size={18} /> Deployment preview</h2>
+            <p className="muted">The deploy action applies these prerequisites and the generated overlay to the selected context. Review the pinned checkout and resource requests before using it.</p>
+            <pre className="command-preview">{llmdPlan.commands.map((command) => `$ ${command.join(" ")}`).join("\n\n")}</pre>
+            <details><summary>Generated CPU vLLM overlay</summary><pre className="command-preview">{llmdPlan.overlay}</pre></details>
+          </section>}
+
+          {(activeExperiment.status === "llm-d-deployed" || activeExperiment.status === "llm-d-benchmarked" || llmdEndpointStatus) && <>
+            <section className="panel">
+              <h2><Cloud size={18} /> 3. Run inference through LLM-D</h2>
+              <p className="muted">The app maintains a local `kubectl port-forward` to the LLM-D router. This is an OpenAI-compatible endpoint; the router selects a healthy CPU vLLM replica.</p>
+              <div className="endpoint-card">
+                <div>
+                  <span className={`endpoint-dot ${llmdEndpointStatus?.healthy ? "running" : ""}`} />
+                  <strong>{llmdEndpointStatus?.healthy ? "Endpoint running" : `Endpoint ${llmdEndpointStatus?.status || "stopped"}`}</strong>
+                  <p>{llmdEndpointStatus?.endpoint_url || "Start the local endpoint to get a test URL."}</p>
+                </div>
+                <div className="endpoint-actions">
+                  <button className="primary" onClick={startLlmDEndpoint} disabled={isBusy}>{activeAction === "endpoint" ? "Starting" : "Start endpoint"}</button>
+                  <button onClick={() => refreshLlmDEndpoint()} disabled={isBusy}>Refresh</button>
+                  <button onClick={stopLlmDEndpoint} disabled={isBusy || !llmdEndpointStatus}>Stop</button>
+                </div>
+              </div>
+              <div className="form-grid">
+                <label className="wide">Test prompt<textarea value={llmdPrompt} onChange={(event) => setLlmdPrompt(event.target.value)} rows={3} /></label>
+                <button className="primary" onClick={runLlmDInference} disabled={isBusy}><Play size={16} /> {activeAction === "endpoint" ? "Sending" : "Send test request"}</button>
+              </div>
+              {llmdInferenceResponse && <details open><summary>Latest OpenAI-compatible response</summary><pre className="command-preview">{JSON.stringify(llmdInferenceResponse, null, 2)}</pre></details>}
+            </section>
+
+            <section className="panel">
+              <h2><Activity size={18} /> 4. Benchmark this configuration</h2>
+              <p className="muted">This benchmark goes through the local LLM-D endpoint. After changing any CPU/vLLM setting above, redeploy and run this exact workload again to make a fair comparison.</p>
+              <div className="form-grid">
+                <label>Concurrency<input type="number" min={1} value={llmdBenchmarkConcurrency} onChange={(event) => setLlmdBenchmarkConcurrency(Number(event.target.value))} /></label>
+                <label>Requests<input type="number" min={1} value={llmdBenchmarkRequests} onChange={(event) => setLlmdBenchmarkRequests(Number(event.target.value))} /></label>
+                <label>Max output tokens<input type="number" min={1} value={llmdBenchmarkTokens} onChange={(event) => setLlmdBenchmarkTokens(Number(event.target.value))} /></label>
+                <button className="primary" onClick={runLlmDBenchmark} disabled={isBusy}><Activity size={16} /> {activeAction === "benchmark" ? "Benchmarking" : "Run benchmark"}</button>
+              </div>
+              {llmdBenchmarkResult && <div className="metrics">
+                <Metric title="Latency p95" value={formatSeconds(metric(llmdBenchmarkResult.summary, "latency_seconds.p95"))} />
+                <Metric title="TTFT p95" value={formatSeconds(metric(llmdBenchmarkResult.summary, "ttft_seconds.p95"))} />
+                <Metric title="Requests/sec" value={formatNumber(llmdBenchmarkResult.summary.requests_per_second)} />
+                <Metric title="Approx tokens/sec" value={formatNumber(llmdBenchmarkResult.summary.approx_output_tokens_per_second)} />
+              </div>}
+              {llmdBenchmarkResult && <p className="muted">Saved: {llmdBenchmarkResult.raw_path}</p>}
+            </section>
+
+            <section className="panel">
+              <div className="section-heading">
+                <div>
+                  <h2><Activity size={18} /> LLM-D benchmark history</h2>
+                  <p className="muted">Every LLM-D run is saved here. Use the same workload after a single configuration change to make comparisons meaningful.</p>
+                </div>
+                <button onClick={loadLlmDBenchmarks} disabled={isBusy}>Refresh history</button>
+              </div>
+              <div className="metrics">
+                <Metric title="Runs" value={llmdBenchmarks.length} />
+                <Metric title="Best latency p95" value={formatSeconds(Math.min(...llmdBenchmarks.filter((item) => Number(item.summary.successful_requests || 0) > 0).map((item) => metric(item.summary, "latency_seconds.p95") ?? Infinity)))} />
+                <Metric title="Best TTFT p95" value={formatSeconds(Math.min(...llmdBenchmarks.filter((item) => Number(item.summary.successful_requests || 0) > 0).map((item) => metric(item.summary, "ttft_seconds.p95") ?? Infinity)))} />
+                <Metric title="Best req/s" value={formatNumber(Math.max(...llmdBenchmarks.filter((item) => Number(item.summary.successful_requests || 0) > 0).map((item) => Number(item.summary.requests_per_second || 0))))} />
+                <Metric title="Best approx tok/s" value={formatNumber(Math.max(...llmdBenchmarks.filter((item) => Number(item.summary.successful_requests || 0) > 0).map((item) => Number(item.summary.approx_output_tokens_per_second || 0))))} />
+              </div>
+              <LlmDBenchmarkTable benchmarks={llmdBenchmarks} />
+            </section>
+          </>}
+        </>}
 
         {view === "setup" && <>
         <section id="context" className="panel">
@@ -1202,6 +1606,10 @@ function Metric({ title, value }: { title: string; value: string | number }) {
   return <div className="metric"><span>{title}</span><strong>{String(value).replace("Infinity", "n/a")}</strong></div>;
 }
 
+function ConfigLabel({ label, help, onShow }: { label: string; help: SettingHelp; onShow: (help: SettingHelp) => void }) {
+  return <span className="config-label">{label}<button type="button" className="setting-info" onClick={(event) => { event.preventDefault(); onShow(help); }} aria-label={`About ${label}`} title={`About ${label}`}><Info size={13} /></button></span>;
+}
+
 function ReadinessItem({ label, ready, detail }: { label: string; ready: boolean; detail: string }) {
   return (
     <div className={`readiness-item ${ready ? "ready" : ""}`}>
@@ -1257,6 +1665,28 @@ function BenchmarkTable({ benchmarks }: { benchmarks: BenchmarkRecord[] }) {
     <table>
       <thead><tr><th>Name</th><th>Preset</th><th>Lane</th><th>Shape</th><th>Concurrency</th><th>Requests</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Raw file</th></tr></thead>
       <tbody>{benchmarks.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.summary.preset_name || "n/a"}</td><td>{laneLabel(item.summary.experiment_lane)}</td><td>{item.summary.shape || "n/a"}</td><td>{item.summary.concurrency}</td><td>{item.summary.requests}</td><td>{formatSeconds(metric(item.summary, "latency_seconds.p95"))}</td><td>{formatSeconds(metric(item.summary, "ttft_seconds.p95"))}</td><td>{formatNumber(item.summary.requests_per_second)}</td><td>{formatNumber(item.summary.approx_output_tokens_per_second)}</td><td>{item.raw_path}</td></tr>)}</tbody>
+    </table>
+  );
+}
+
+function LlmDBenchmarkTable({ benchmarks }: { benchmarks: LlmDBenchmarkRecord[] }) {
+  if (!benchmarks.length) return <p className="muted">No LLM-D benchmark runs yet. Run the baseline workload above to start the comparison history.</p>;
+  return (
+    <table>
+      <thead><tr><th>Run</th><th>Status</th><th>Model</th><th>Concurrency</th><th>Requests</th><th>Max tokens</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Saved</th></tr></thead>
+      <tbody>{benchmarks.map((item) => <tr key={item.id}>
+        <td>{item.name}</td>
+        <td>{Number(item.summary.successful_requests || 0) > 0 ? `${item.summary.successful_requests}/${item.summary.requests} succeeded` : "Failed: no responses"}</td>
+        <td>{item.summary.model || "n/a"}</td>
+        <td>{item.summary.concurrency}</td>
+        <td>{item.summary.requests}</td>
+        <td>{item.summary.max_tokens}</td>
+        <td>{formatSeconds(metric(item.summary, "latency_seconds.p95"))}</td>
+        <td>{formatSeconds(metric(item.summary, "ttft_seconds.p95"))}</td>
+        <td>{Number(item.summary.successful_requests || 0) > 0 ? formatNumber(item.summary.requests_per_second) : "n/a"}</td>
+        <td>{Number(item.summary.successful_requests || 0) > 0 ? formatNumber(item.summary.approx_output_tokens_per_second) : "n/a"}</td>
+        <td>{new Date(item.created_at).toLocaleString()}</td>
+      </tr>)}</tbody>
     </table>
   );
 }

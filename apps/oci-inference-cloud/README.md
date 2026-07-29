@@ -2,6 +2,8 @@
 
 A local hackathon workbench for provisioning OCI inference experiments, deploying `llama.cpp`, exposing a private OpenAI-compatible endpoint through a local proxy, running inference benchmarks, and handing participants sample apps.
 
+It also includes an **LLM-D on existing CPU cluster** experiment type. That flow validates a local kubeconfig context, renders a reviewable overlay against a pinned LLM-D checkout, installs the LLM-D router and CPU vLLM model-server pool only after the user confirms deployment, and preserves the generated overlay and command log outside the repository.
+
 Full tutorial guide:
 
 [../../docs/inference-cloud-lab-guide.md](../../docs/inference-cloud-lab-guide.md)
@@ -61,6 +63,8 @@ http://127.0.0.1:5173
 5. Run benchmark presets to understand latency, TTFT, concurrency, and output throughput.
 6. Open the Hackathon view and start the local endpoint proxy.
 7. Give participants the generated `CPU_ENDPOINT_URL`.
+
+For the LLM-D cluster lab, create an `LLM-D on existing CPU cluster` experiment instead. The app does not create or delete the Kubernetes cluster; it operates only on the selected context and namespace.
 8. Run one of the sample apps:
 
 ```bash

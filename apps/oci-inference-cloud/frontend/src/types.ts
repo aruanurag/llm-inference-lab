@@ -21,9 +21,64 @@ export type ExperimentRecord = {
   id: number;
   name: string;
   description: string;
+  kind: "cpu-instance" | "llm-d-cluster" | string;
   status: string;
   created_at: string;
   updated_at: string;
+};
+
+export type KubernetesContext = { name: string };
+
+export type ClusterValidation = {
+  context: string;
+  namespace: string;
+  kubectl_version?: string | null;
+  helm_version?: string | null;
+  ready_nodes: number;
+  total_nodes: number;
+  cpu_cores: number;
+  memory_kib: number;
+  architectures: string[];
+  warnings: string[];
+};
+
+export type LlmDCheckout = {
+  path: string;
+  revision: string;
+  status: "cloned" | "existing" | string;
+};
+
+export type LlmDPlan = {
+  context: string;
+  namespace: string;
+  release_name: string;
+  overlay_path: string;
+  overlay: string;
+  commands: string[][];
+};
+
+export type LlmDEndpointStatus = {
+  experiment_id: number;
+  status: "stopped" | "starting" | "running" | string;
+  endpoint_url: string;
+  healthy: boolean;
+};
+
+export type LlmDBenchmarkResult = {
+  endpoint_url: string;
+  raw_path: string;
+  summary_path: string;
+  summary: Record<string, any>;
+};
+
+export type LlmDBenchmarkRecord = {
+  id: number;
+  experiment_id: number;
+  name: string;
+  raw_path: string;
+  summary_path: string;
+  created_at: string;
+  summary: Record<string, any>;
 };
 
 export type InstanceRecord = {

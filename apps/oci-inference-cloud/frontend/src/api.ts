@@ -1,4 +1,4 @@
-import type { BenchmarkRecord, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, Option, Profile, PromptSet, SshKeyRecord } from "./types";
+import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDPlan, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -20,7 +20,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   profiles: () => request<Profile[]>("/api/profiles"),
   experiments: () => request<ExperimentRecord[]>("/api/experiments"),
-  createExperiment: (payload: { name: string; description: string }) =>
+  createExperiment: (payload: { name: string; description: string; kind?: string }) =>
     request<ExperimentRecord>("/api/experiments", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   exportExperiment: (experimentId: number) => request<Record<string, unknown>>(`/api/experiments/${experimentId}/export`),
   deleteExperimentInfra: (experimentId: number) =>
@@ -28,6 +28,23 @@ export const api = {
   endpointHealth: (experimentId: number) => request<EndpointStatus>(`/api/experiments/${experimentId}/endpoint/health`),
   startEndpoint: (experimentId: number) => request<EndpointStatus>(`/api/experiments/${experimentId}/endpoint/start`, { method: "POST" }),
   stopEndpoint: (experimentId: number) => request<EndpointStatus>(`/api/experiments/${experimentId}/endpoint/stop`, { method: "POST" }),
+  kubernetesContexts: () => request<KubernetesContext[]>("/api/kubernetes/contexts"),
+  validateKubernetes: (payload: { context: string; namespace: string }) =>
+    request<ClusterValidation>("/api/kubernetes/validate", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  prepareLlmDCheckout: (path?: string) =>
+    request<LlmDCheckout>("/api/llm-d/checkout", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ path: path || null }) }),
+  planLlmD: (experimentId: number, payload: Record<string, unknown>) =>
+    request<LlmDPlan>(`/api/experiments/${experimentId}/llm-d/plan`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  deployLlmD: (experimentId: number, payload: Record<string, unknown>) =>
+    request<{ status: string; log_path: string; message: string; plan: LlmDPlan }>(`/api/experiments/${experimentId}/llm-d/deploy`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdEndpoint: (experimentId: number) => request<LlmDEndpointStatus>(`/api/experiments/${experimentId}/llm-d/endpoint`),
+  startLlmDEndpoint: (experimentId: number) => request<LlmDEndpointStatus>(`/api/experiments/${experimentId}/llm-d/endpoint/start`, { method: "POST" }),
+  stopLlmDEndpoint: (experimentId: number) => request<LlmDEndpointStatus>(`/api/experiments/${experimentId}/llm-d/endpoint/stop`, { method: "POST" }),
+  inferLlmD: (experimentId: number, payload: { prompt: string; max_tokens: number; temperature: number }) =>
+    request<Record<string, any>>(`/api/experiments/${experimentId}/llm-d/inference`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  benchmarkLlmD: (experimentId: number, payload: Record<string, unknown>) =>
+    request<LlmDBenchmarkResult>(`/api/experiments/${experimentId}/llm-d/benchmark`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdBenchmarks: (experimentId: number) => request<LlmDBenchmarkRecord[]>(`/api/experiments/${experimentId}/llm-d/benchmarks`),
   context: (payload: { profile: string; region?: string | null; compartment_id?: string | null }) =>
     request("/api/context", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   compartments: () => request<Option[]>("/api/compartments"),

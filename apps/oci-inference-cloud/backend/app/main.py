@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
-from . import endpoint, oci_cli, state
+from . import endpoint, llmd, llmd_endpoint, oci_cli, state
 from .benchmark import run_benchmark, write_benchmark_result
 from .config import BENCHMARKS_DIR, PROMPTS_DIR, ensure_app_dirs
 from .deploy import deploy_llama_cpp, list_deploy_models
@@ -17,6 +17,8 @@ from .prompts import parse_prompt_file, read_prompt_set, seed_default_prompts
 from .schemas import (
     BenchmarkRecord,
     BenchmarkRequest,
+    ClusterAccessRequest,
+    ClusterValidation,
     ContextRequest,
     ContextState,
     DeployResult,
@@ -26,6 +28,17 @@ from .schemas import (
     ExperimentRecord,
     InstanceCreate,
     InstanceRecord,
+    KubernetesContext,
+    LlmDDeployResult,
+    LlmDCheckout,
+    LlmDCheckoutRequest,
+    LlmDBenchmarkRequest,
+    LlmDBenchmarkResult,
+    LlmDBenchmarkRecord,
+    LlmDDeploymentRequest,
+    LlmDEndpointStatus,
+    LlmDInferenceRequest,
+    LlmDPlan,
     Option,
     Profile,
     PromptSet,
@@ -82,7 +95,134 @@ def experiments() -> list[ExperimentRecord]:
 def create_experiment(request: ExperimentCreate) -> ExperimentRecord:
     if not request.name.strip():
         raise HTTPException(status_code=400, detail="Experiment name is required.")
-    return ExperimentRecord(**state.insert_experiment(request.name.strip(), request.description.strip()))
+    return ExperimentRecord(**state.insert_experiment(request.name.strip(), request.description.strip(), request.kind))
+
+
+@app.get("/api/kubernetes/contexts", response_model=list[KubernetesContext])
+def kubernetes_contexts() -> list[KubernetesContext]:
+    try:
+        return [KubernetesContext(name=name) for name in llmd.list_contexts()]
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/kubernetes/validate", response_model=ClusterValidation)
+def validate_kubernetes_cluster(request: ClusterAccessRequest) -> ClusterValidation:
+    try:
+        return ClusterValidation(**llmd.validate_cluster(request.context, request.namespace))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/llm-d/checkout", response_model=LlmDCheckout)
+def prepare_llmd_checkout(request: LlmDCheckoutRequest) -> LlmDCheckout:
+    try:
+        return LlmDCheckout(**llmd.prepare_checkout(request.path))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/plan", response_model=LlmDPlan)
+def plan_llmd_deployment(experiment_id: int, request: LlmDDeploymentRequest) -> LlmDPlan:
+    try:
+        state.get_experiment(experiment_id)
+        safe_config = request.model_dump(exclude={"hf_token"})
+        state.set_setting(f"llmd:{experiment_id}", safe_config)
+        return LlmDPlan(**llmd.make_plan(request.model_dump(), experiment_id))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/deploy", response_model=LlmDDeployResult)
+def deploy_llmd(experiment_id: int, request: LlmDDeploymentRequest) -> LlmDDeployResult:
+    try:
+        state.get_experiment(experiment_id)
+        safe_config = request.model_dump(exclude={"hf_token"})
+        # Record the selected target before applying. If Kubernetes reports a
+        # recoverable rollout issue, endpoint and diagnostics must still refer
+        # to the cluster the participant just chose—not an earlier experiment.
+        state.set_setting(f"llmd:{experiment_id}", safe_config)
+        plan, log_path, message = llmd.deploy(request.model_dump(), experiment_id)
+        state.update_experiment(experiment_id, status="llm-d-deployed")
+        return LlmDDeployResult(status="ok", log_path=str(log_path), message=message, plan=LlmDPlan(**plan))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/endpoint", response_model=LlmDEndpointStatus)
+def llmd_endpoint_status(experiment_id: int) -> LlmDEndpointStatus:
+    state.get_experiment(experiment_id)
+    return LlmDEndpointStatus(**llmd_endpoint.status(experiment_id))
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/endpoint/start", response_model=LlmDEndpointStatus)
+def start_llmd_endpoint(experiment_id: int) -> LlmDEndpointStatus:
+    try:
+        state.get_experiment(experiment_id)
+        return LlmDEndpointStatus(**llmd_endpoint.start(experiment_id))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/endpoint/stop", response_model=LlmDEndpointStatus)
+def stop_llmd_endpoint(experiment_id: int) -> LlmDEndpointStatus:
+    state.get_experiment(experiment_id)
+    return LlmDEndpointStatus(**llmd_endpoint.stop(experiment_id))
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/inference")
+def llmd_inference(experiment_id: int, request: LlmDInferenceRequest) -> dict[str, Any]:
+    try:
+        state.get_experiment(experiment_id)
+        return llmd_endpoint.chat(experiment_id, request.prompt, request.max_tokens, request.temperature)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/benchmark", response_model=LlmDBenchmarkResult)
+async def benchmark_llmd(experiment_id: int, request: LlmDBenchmarkRequest) -> LlmDBenchmarkResult:
+    try:
+        state.get_experiment(experiment_id)
+        endpoint_state = llmd_endpoint.start(experiment_id)
+        config = llmd_endpoint.deployment_config(experiment_id)
+        result = await run_benchmark(
+            url=f"{endpoint_state['endpoint_url']}/v1/chat/completions",
+            model=config["model"],
+            prompts=[request.prompt],
+            concurrency=request.concurrency,
+            requests=request.requests,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
+        result["summary"].update({
+            "name": request.name,
+            "experiment_id": experiment_id,
+            "deployment": "llm-d-cpu-vllm",
+            "model": config["model"],
+            "namespace": config["namespace"],
+            "release_name": config["release_name"],
+        })
+        output_dir = BENCHMARKS_DIR / "llm-d" / str(experiment_id)
+        raw_path, summary_path = write_benchmark_result(output_dir, request.name, result)
+        state.insert_llmd_benchmark(experiment_id, request.name, summary_path, raw_path, result["summary"])
+        successful_requests = result["summary"]["successful_requests"]
+        if successful_requests == 0:
+            raise RuntimeError(
+                f"Benchmark could not reach the LLM-D endpoint: 0/{result['summary']['requests']} requests succeeded. "
+                "The failed attempt was saved in benchmark history for troubleshooting."
+            )
+        state.update_experiment(experiment_id, status="llm-d-benchmarked")
+        return LlmDBenchmarkResult(
+            endpoint_url=endpoint_state["endpoint_url"], raw_path=str(raw_path), summary_path=str(summary_path), summary=result["summary"],
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/benchmarks", response_model=list[LlmDBenchmarkRecord])
+def list_llmd_benchmark_runs(experiment_id: int) -> list[LlmDBenchmarkRecord]:
+    state.get_experiment(experiment_id)
+    return [LlmDBenchmarkRecord(**item) for item in state.list_llmd_benchmarks(experiment_id)]
 
 
 @app.get("/api/experiments/{experiment_id}/export")
@@ -94,6 +234,7 @@ def export_experiment(experiment_id: int) -> dict[str, Any]:
         "experiment": experiment,
         "instances": instances,
         "benchmarks": benchmarks,
+        "llmd_benchmarks": state.list_llmd_benchmarks(experiment_id),
         "endpoint": state.get_endpoint_session(experiment_id),
         "endpoint_analytics": state.endpoint_analytics(experiment_id),
         "exported_at": state.utc_now(),

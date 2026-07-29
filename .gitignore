@@ -39,6 +39,11 @@ pnpm-debug.log*
 # Local credentials, app state, and exported experiment bundles
 .llm-inference-cloud/
 **/.llm-inference-cloud/
+.kube/
+**/.kube/
+kubeconfig
+kubeconfig.*
+*.kubeconfig
 oci-inference-cloud-dev/
 **/state.db
 *.sqlite
@@ -69,6 +74,8 @@ labs/*/results/summary.json
 labs/*/results/summary.csv
 
 # Additional generated lab artifacts
+benchmarks/
+**/benchmarks/
 **/results/logs/*
 **/results/raw/*.json
 **/results/summary.json

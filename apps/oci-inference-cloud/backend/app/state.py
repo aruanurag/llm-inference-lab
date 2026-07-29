@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import STATE_DB, ensure_app_dirs
+from .config import BENCHMARKS_DIR, STATE_DB, ensure_app_dirs
 
 
 def utc_now() -> str:
@@ -33,6 +33,7 @@ def init_db() -> None:
               id integer primary key autoincrement,
               name text not null,
               description text not null default '',
+              kind text not null default 'cpu-instance',
               status text not null default 'setup',
               created_at text not null,
               updated_at text not null
@@ -111,6 +112,16 @@ def init_db() -> None:
               error text,
               created_at text not null
             );
+
+            create table if not exists llmd_benchmarks (
+              id integer primary key autoincrement,
+              experiment_id integer not null,
+              name text not null,
+              summary_path text not null,
+              raw_path text not null,
+              summary_json text not null,
+              created_at text not null
+            );
             """
         )
         columns = {row["name"] for row in db.execute("pragma table_info(instances)").fetchall()}
@@ -122,6 +133,9 @@ def init_db() -> None:
         columns = {row["name"] for row in db.execute("pragma table_info(prompt_sets)").fetchall()}
         if "description" not in columns:
             db.execute("alter table prompt_sets add column description text not null default ''")
+        columns = {row["name"] for row in db.execute("pragma table_info(experiments)").fetchall()}
+        if "kind" not in columns:
+            db.execute("alter table experiments add column kind text not null default 'cpu-instance'")
 
 
 def set_setting(key: str, value: dict[str, Any]) -> None:
@@ -153,12 +167,12 @@ def percentile(values: list[float], pct: float) -> float | None:
     return ordered[index]
 
 
-def insert_experiment(name: str, description: str = "") -> dict[str, Any]:
+def insert_experiment(name: str, description: str = "", kind: str = "cpu-instance") -> dict[str, Any]:
     now = utc_now()
     with connect() as db:
         cursor = db.execute(
-            "insert into experiments(name, description, status, created_at, updated_at) values (?, ?, ?, ?, ?)",
-            (name, description, "setup", now, now),
+            "insert into experiments(name, description, kind, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?)",
+            (name, description, kind, "setup", now, now),
         )
         row = db.execute("select * from experiments where id = ?", (cursor.lastrowid,)).fetchone()
     return row_to_dict(row)
@@ -389,6 +403,45 @@ def list_benchmarks() -> list[dict[str, Any]]:
 def list_benchmarks_for_experiment(experiment_id: int) -> list[dict[str, Any]]:
     with connect() as db:
         rows = db.execute("select * from benchmarks where experiment_id = ? order by created_at desc", (experiment_id,)).fetchall()
+    results = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["summary"] = json.loads(item.pop("summary_json"))
+        results.append(item)
+    return results
+
+
+def insert_llmd_benchmark(experiment_id: int, name: str, summary_path: Path, raw_path: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    created_at = utc_now()
+    with connect() as db:
+        cursor = db.execute(
+            "insert into llmd_benchmarks(experiment_id, name, summary_path, raw_path, summary_json, created_at) values (?, ?, ?, ?, ?, ?)",
+            (experiment_id, name, str(summary_path), str(raw_path), json.dumps(summary), created_at),
+        )
+        row = db.execute("select * from llmd_benchmarks where id = ?", (cursor.lastrowid,)).fetchone()
+    item = row_to_dict(row)
+    item["summary"] = json.loads(item.pop("summary_json"))
+    return item
+
+
+def list_llmd_benchmarks(experiment_id: int) -> list[dict[str, Any]]:
+    output_dir = BENCHMARKS_DIR / "llm-d" / str(experiment_id)
+    if output_dir.exists():
+        with connect() as db:
+            recorded_paths = {row["summary_path"] for row in db.execute("select summary_path from llmd_benchmarks where experiment_id = ?", (experiment_id,)).fetchall()}
+        for summary_path in output_dir.glob("*-summary.json"):
+            if str(summary_path) in recorded_paths:
+                continue
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                raw_name = summary_path.name.removesuffix("-summary.json") + ".json"
+                raw_path = summary_path.with_name(raw_name)
+                if raw_path.exists():
+                    insert_llmd_benchmark(experiment_id, str(summary.get("name") or raw_name.removesuffix(".json")), summary_path, raw_path, summary)
+            except (OSError, json.JSONDecodeError):
+                continue
+    with connect() as db:
+        rows = db.execute("select * from llmd_benchmarks where experiment_id = ? order by created_at desc", (experiment_id,)).fetchall()
     results = []
     for row in rows:
         item = row_to_dict(row)

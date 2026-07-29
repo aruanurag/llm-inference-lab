@@ -95,6 +95,7 @@ main {
   gap: 16px;
   max-width: 1440px;
   width: 100%;
+  min-width: 0;
 }
 
 header {
@@ -325,6 +326,47 @@ header p,
   font-size: 12px;
 }
 
+.command-preview {
+  overflow: auto;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 28rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.config-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.setting-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.setting-help {
+  margin-top: 0.9rem;
+  align-items: flex-start;
+}
+
+.setting-help button {
+  margin-left: auto;
+}
+
 .hint-row {
   margin-top: 12px;
   padding: 10px 12px;
@@ -483,6 +525,7 @@ header p,
   border-radius: 8px;
   padding: 18px;
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .panel h2,
@@ -493,6 +536,17 @@ header p,
   gap: 8px;
   font-size: 18px;
   letter-spacing: 0;
+}
+
+.section-heading {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.section-heading h2 {
+  margin-bottom: 6px;
 }
 
 .experiment-panel {

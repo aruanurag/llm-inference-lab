@@ -36,6 +36,14 @@ Start here:
 
 [labs/02-vllm-on-oci/README.md](labs/02-vllm-on-oci/README.md)
 
+### Lab 3: LLM-D on an Existing OCI CPU Kubernetes Cluster
+
+The third lab introduces Kubernetes-native distributed inference. It deploys the LLM-D routing stack with a CPU vLLM model-server pool on an existing cluster, then measures configuration and replica scale-out tradeoffs with the same streaming benchmark approach.
+
+Start here:
+
+[labs/03-llm-d-on-oci-cpu-cluster/README.md](labs/03-llm-d-on-oci-cpu-cluster/README.md)
+
 ## Apps
 
 ### OCI Inference Cloud

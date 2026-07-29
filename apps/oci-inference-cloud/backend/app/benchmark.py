@@ -54,9 +54,10 @@ def post_streaming_request(
     request_id: int,
     max_tokens: int,
     temperature: float,
+    model: str = "local-model",
 ) -> RequestMetrics:
     payload = {
-        "model": "local-model",
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
         "max_tokens": max_tokens,
@@ -124,6 +125,7 @@ async def run_benchmark(
     requests: int,
     max_tokens: int,
     temperature: float,
+    model: str = "local-model",
 ) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -138,6 +140,7 @@ async def run_benchmark(
                 request_id=request_id,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                model=model,
             )
 
     results = await asyncio.gather(*[one(i + 1) for i in range(max(requests, concurrency))])
@@ -155,7 +158,7 @@ async def run_benchmark(
         "prompt_count": len(prompts),
         "max_tokens": max_tokens,
         "wall_seconds": wall_seconds,
-        "requests_per_second": len(results) / wall_seconds if wall_seconds > 0 else 0,
+        "requests_per_second": sum(1 for result in results if result.status == "ok") / wall_seconds if wall_seconds > 0 else 0,
         "output_chars": output_chars,
         "output_chars_per_second": output_chars / wall_seconds if wall_seconds > 0 else 0,
         "approx_output_tokens": approx_output_tokens,
