@@ -34,6 +34,52 @@ LLM-D routes to supported model servers such as vLLM. The previous direct `llama
 
 Follow [setup.md](setup.md) before deploying.
 
+## Optional: Provision an OKE Cluster for This Lab
+
+This lab deliberately deploys to an *existing* cluster. If you need a dedicated environment, provision an Oracle Kubernetes Engine (OKE) cluster first, then return to the lab workflow. The workbench will not create or delete that cluster for you.
+
+### Choose the OKE shape of the experiment
+
+For the first CPU vLLM run, choose an OKE cluster with a **managed node pool**, not virtual nodes. Managed nodes let you choose the CPU and memory shape and observe the capacity that a CPU model-server pod consumes. Start with one managed CPU worker node that has enough *allocatable* capacity for the baseline model-server request plus Kubernetes and router headroom. The baseline in this lab requests 16 CPUs and 32 GiB per replica, so do not size the node exactly at those values.
+
+To demonstrate replica scale-out, plan for a second worker node or enough unused CPU and memory for the second model-server pod. A one-node cluster is still useful for baseline, parameter, and prefix-cache experiments, but a model-server redeploy briefly replaces the pod rather than running old and new versions simultaneously.
+
+### Create the cluster in OCI Console
+
+1. In the OCI Console, open **Developer Services → Kubernetes Clusters (OKE)** and select **Create cluster**.
+2. Choose **Quick Create** when OCI can create the VCN and default networking for a disposable lab. Choose **Custom Create** when you need an existing VCN, private API endpoint, specific subnets, or organization-standard network controls.
+3. Choose **Managed** as the node type. Select a current OKE worker-node image and a CPU shape with the capacity described above.
+4. Prefer **private worker nodes**. A public Kubernetes API endpoint is convenient for a local hands-on lab only when its ingress is tightly restricted. A private endpoint requires network access through an approved path such as VPN, FastConnect, or a bastion.
+5. Wait for the cluster and node-pool work requests to finish, then confirm the worker node is Ready.
+
+Oracle references:
+
+- [Create an OKE cluster](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingclusterusingoke_topic-Using_the_API.htm)
+- [Quick Create workflow](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingclusterusingoke_topic-Using_the_Console_to_create_a_Quick_Cluster_with_Default_Settings.htm)
+- [Custom Create workflow](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingclusterusingoke_topic-Using_the_Console_to_create_a_Custom_Cluster_with_Explicitly_Defined_Settings.htm)
+- [Managed nodes and capacity responsibilities](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengworkingwithmanagednodes.htm)
+- [Create or add a managed node pool](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/create-node-pool.htm)
+
+### Configure local cluster access
+
+Keep the cluster OCID and kubeconfig on your workstation; neither belongs in this repository. Generate a kubeconfig with your own placeholders, then validate access:
+
+```bash
+mkdir -p "$HOME/.kube"
+
+oci ce cluster create-kubeconfig \
+  --cluster-id <cluster-ocid> \
+  --file "$HOME/.kube/config" \
+  --region <region> \
+  --token-version 2.0.0 \
+  --kube-endpoint PUBLIC_ENDPOINT
+
+kubectl config get-contexts
+kubectl get nodes -o wide
+```
+
+Use `PRIVATE_ENDPOINT` instead of `PUBLIC_ENDPOINT` only when your machine has a permitted private network path to the Kubernetes API. The OCI CLI identity needs the appropriate IAM permissions to create or manage the cluster and to generate access credentials. See the [OKE documentation home](https://docs.oracle.com/en-us/iaas/Content/ContEng/) for current IAM, networking, and access guidance.
+
 ## Recommended First Configuration
 
 Use the upstream CPU vLLM recipe as the baseline and reduce it to fit the available CPU pool:
