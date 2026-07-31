@@ -194,6 +194,7 @@ class LlmDDeploymentRequest(ClusterAccessRequest):
     cpu_threads_bind: str | None = None
     reserved_cpu: int = Field(default=1, ge=0, le=128)
     enable_prefix_caching: bool = True
+    enable_autoscaling: bool = False
     hf_token: str | None = None
 
 
@@ -214,6 +215,8 @@ class LlmDPlan(BaseModel):
     overlay_path: str
     commands: list[list[str]]
     overlay: str
+    monitoring_path: str | None = None
+    monitoring_manifest: str | None = None
 
 
 class LlmDDeployResult(BaseModel):
@@ -239,6 +242,7 @@ class LlmDInferenceRequest(BaseModel):
 class LlmDBenchmarkRequest(BaseModel):
     name: str = "llmd-cpu-baseline"
     prompt: str = "Explain why an LLM-aware router uses queue depth and cache state."
+    prompt_set_id: int | None = None
     concurrency: int = Field(default=1, ge=1, le=128)
     requests: int = Field(default=8, ge=1, le=1000)
     max_tokens: int = Field(default=128, ge=1, le=4096)
@@ -260,3 +264,101 @@ class LlmDBenchmarkRecord(BaseModel):
     summary_path: str
     created_at: str
     summary: dict[str, Any]
+
+
+class LlmDPlatformPreflightRequest(ClusterAccessRequest):
+    release_name: str = "llm-d-lab"
+    monitoring_namespace: str = "llm-d-monitoring"
+    prometheus_service: str = "llmd-kube-prometheus-stack-prometheus"
+    grafana_service: str = "llmd-grafana"
+    keda_namespace: str = "keda"
+
+
+class LlmDPlatformBootstrapRequest(BaseModel):
+    context: str
+    llmd_repo_path: str
+    namespace: str = "llm-d-lab"
+    release_name: str = "llm-d-lab"
+    monitoring_namespace: str = "llm-d-monitoring"
+    prometheus_service: str = "llmd-kube-prometheus-stack-prometheus"
+    grafana_service: str = "llmd-grafana"
+    keda_namespace: str = "keda"
+    mode: str = "dedicated"
+    grafana_admin_password: str | None = None
+    confirm_cluster_changes: bool = False
+
+
+class LlmDPlatformPlan(BaseModel):
+    mode: str
+    commands: list[list[str]]
+    values: str
+    dashboards: list[str]
+    cluster_scoped_changes: list[str]
+
+
+class LlmDPlatformResult(BaseModel):
+    status: str
+    log_path: str | None = None
+    message: str
+    plan: LlmDPlatformPlan
+
+
+class LlmDPlatformStatus(BaseModel):
+    configured: bool
+    mode: str | None = None
+    owned: bool = False
+    context: str | None = None
+    monitoring_namespace: str | None = None
+    prometheus_service_name: str | None = None
+    grafana_service_name: str | None = None
+    keda_namespace: str | None = None
+    preflight: dict[str, Any] | None = None
+
+
+class LlmDGrafanaStatus(BaseModel):
+    experiment_id: int
+    status: str
+    endpoint_url: str
+    healthy: bool
+    dashboards: dict[str, str] = Field(default_factory=dict)
+
+
+class LlmDAutoscalingRequest(BaseModel):
+    min_replicas: int = Field(default=1, ge=1, le=20)
+    max_replicas: int = Field(default=3, ge=1, le=50)
+    queue_threshold: int = Field(default=1, ge=1, le=1000)
+    running_request_threshold: int = Field(default=4, ge=1, le=1000)
+    polling_interval: int = Field(default=15, ge=5, le=300)
+    cooldown_period: int = Field(default=300, ge=60, le=3600)
+    scale_down_stabilization: int = Field(default=300, ge=0, le=3600)
+    prometheus_address: str | None = None
+    prometheus_trigger_authentication: str | None = None
+
+
+class LlmDAutoscalingPlan(BaseModel):
+    context: str
+    namespace: str
+    target_deployment: str
+    manifest: str
+    commands: list[list[str]]
+
+
+class LlmDAutoscalingResult(BaseModel):
+    status: str
+    log_path: str
+    message: str
+    plan: LlmDAutoscalingPlan
+
+
+class LlmDAutoscalingObservation(BaseModel):
+    captured_at: str
+    queue_depth: float | None = None
+    running_requests: float | None = None
+    desired_replicas: int | None = None
+    ready_replicas: int = 0
+    hpa_desired_replicas: int | None = None
+    hpa_current_replicas: int | None = None
+    scaled_object_ready: str
+    pending_pods: list[str] = Field(default_factory=list)
+    node_count: int = 0
+    policy: dict[str, int]

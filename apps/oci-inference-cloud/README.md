@@ -4,6 +4,8 @@ A local hackathon workbench for provisioning OCI inference experiments, deployin
 
 It also includes an **LLM-D on existing CPU cluster** experiment type. That flow validates a local kubeconfig context, renders a reviewable overlay against a pinned LLM-D checkout, installs the LLM-D router and CPU vLLM model-server pool only after the user confirms deployment, and preserves the generated overlay and command log outside the repository.
 
+The **Lab 4 · LLM-D autoscaling and observability** experiment adds an opt-in dedicated Prometheus/Grafana/KEDA stack or validates existing platform services. It enables upstream EPP Flow Control and monitoring values, renders a KEDA `ScaledObject` from EPP queue depth and running-request metrics, provides a local-only Grafana tunnel, and records pod/node scaling observations. Grafana credentials are passed directly into a Kubernetes Secret and are never saved by the app.
+
 Full tutorial guide:
 
 [../../docs/inference-cloud-lab-guide.md](../../docs/inference-cloud-lab-guide.md)
@@ -64,7 +66,7 @@ http://127.0.0.1:5173
 6. Open the Hackathon view and start the local endpoint proxy.
 7. Give participants the generated `CPU_ENDPOINT_URL`.
 
-For the LLM-D cluster lab, create an `LLM-D on existing CPU cluster` experiment instead. The app does not create or delete the Kubernetes cluster; it operates only on the selected context and namespace.
+For the LLM-D cluster lab, create an `LLM-D on existing CPU cluster` experiment instead. For demand-driven scaling, select `Lab 4 · LLM-D autoscaling and observability`. The app does not create or delete the Kubernetes cluster; it operates only on the selected context and namespace. OKE Cluster Autoscaler remains administrator-managed because it owns the managed node pool.
 8. Run one of the sample apps:
 
 ```bash

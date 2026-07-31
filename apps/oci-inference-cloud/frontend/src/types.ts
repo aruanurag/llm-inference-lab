@@ -21,7 +21,7 @@ export type ExperimentRecord = {
   id: number;
   name: string;
   description: string;
-  kind: "cpu-instance" | "llm-d-cluster" | string;
+  kind: "cpu-instance" | "llm-d-cluster" | "llm-d-autoscaling" | string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -54,6 +54,8 @@ export type LlmDPlan = {
   release_name: string;
   overlay_path: string;
   overlay: string;
+  monitoring_path?: string | null;
+  monitoring_manifest?: string | null;
   commands: string[][];
 };
 
@@ -79,6 +81,75 @@ export type LlmDBenchmarkRecord = {
   summary_path: string;
   created_at: string;
   summary: Record<string, any>;
+};
+
+export type LlmDPlatformPreflight = {
+  context: string;
+  namespace: string;
+  monitoring_namespace: string;
+  keda_namespace: string;
+  service_monitor_crd: boolean;
+  scaled_object_crd: boolean;
+  prometheus_service: boolean;
+  grafana_service: boolean;
+  keda_ready: boolean;
+  epp_service: boolean;
+  epp_service_monitor: boolean;
+  model_deployment: boolean;
+  node_count: number;
+  conflicting_releases: { name: string; namespace: string; chart: string }[];
+  competing_hpas: string[];
+  warnings: string[];
+};
+
+export type LlmDPlatformPlan = {
+  mode: string;
+  commands: string[][];
+  values: string;
+  dashboards: string[];
+  cluster_scoped_changes: string[];
+};
+
+export type LlmDPlatformStatus = {
+  configured: boolean;
+  mode?: string | null;
+  owned: boolean;
+  context?: string | null;
+  monitoring_namespace?: string | null;
+  prometheus_service_name?: string | null;
+  grafana_service_name?: string | null;
+  keda_namespace?: string | null;
+  preflight?: LlmDPlatformPreflight | null;
+};
+
+export type LlmDGrafanaStatus = {
+  experiment_id: number;
+  status: string;
+  endpoint_url: string;
+  healthy: boolean;
+  dashboards: Record<string, string>;
+};
+
+export type LlmDAutoscalingPlan = {
+  context: string;
+  namespace: string;
+  target_deployment: string;
+  manifest: string;
+  commands: string[][];
+};
+
+export type LlmDAutoscalingObservation = {
+  captured_at: string;
+  queue_depth?: number | null;
+  running_requests?: number | null;
+  desired_replicas?: number | null;
+  ready_replicas: number;
+  hpa_desired_replicas?: number | null;
+  hpa_current_replicas?: number | null;
+  scaled_object_ready: string;
+  pending_pods: string[];
+  node_count: number;
+  policy: Record<string, number>;
 };
 
 export type InstanceRecord = {

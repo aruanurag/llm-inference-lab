@@ -1,4 +1,4 @@
-import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDPlan, Option, Profile, PromptSet, SshKeyRecord } from "./types";
+import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDAutoscalingObservation, LlmDAutoscalingPlan, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDGrafanaStatus, LlmDPlan, LlmDPlatformPlan, LlmDPlatformPreflight, LlmDPlatformStatus, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -45,6 +45,23 @@ export const api = {
   benchmarkLlmD: (experimentId: number, payload: Record<string, unknown>) =>
     request<LlmDBenchmarkResult>(`/api/experiments/${experimentId}/llm-d/benchmark`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   llmdBenchmarks: (experimentId: number) => request<LlmDBenchmarkRecord[]>(`/api/experiments/${experimentId}/llm-d/benchmarks`),
+  llmdPlatformPreflight: (experimentId: number, payload: { context: string; namespace: string; release_name: string; monitoring_namespace: string; prometheus_service: string; grafana_service: string; keda_namespace: string }) =>
+    request<LlmDPlatformPreflight>(`/api/experiments/${experimentId}/llm-d/autoscaling/preflight`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdPlatformStatus: (experimentId: number) => request<LlmDPlatformStatus>(`/api/experiments/${experimentId}/llm-d/autoscaling/platform`),
+  planLlmDPlatform: (experimentId: number, payload: Record<string, unknown>) =>
+    request<LlmDPlatformPlan>(`/api/experiments/${experimentId}/llm-d/autoscaling/platform/plan`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  bootstrapLlmDPlatform: (experimentId: number, payload: Record<string, unknown>) =>
+    request<{ status: string; log_path?: string; message: string; plan: LlmDPlatformPlan }>(`/api/experiments/${experimentId}/llm-d/autoscaling/platform/bootstrap`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  uninstallLlmDPlatform: (experimentId: number, payload: Record<string, unknown>) =>
+    request<{ status: string; log_path: string; message: string }>(`/api/experiments/${experimentId}/llm-d/autoscaling/platform/uninstall`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdGrafana: (experimentId: number) => request<LlmDGrafanaStatus>(`/api/experiments/${experimentId}/llm-d/grafana`),
+  startLlmDGrafana: (experimentId: number) => request<LlmDGrafanaStatus>(`/api/experiments/${experimentId}/llm-d/grafana/start`, { method: "POST" }),
+  stopLlmDGrafana: (experimentId: number) => request<LlmDGrafanaStatus>(`/api/experiments/${experimentId}/llm-d/grafana/stop`, { method: "POST" }),
+  planLlmDAutoscaling: (experimentId: number, payload: Record<string, unknown>) =>
+    request<LlmDAutoscalingPlan>(`/api/experiments/${experimentId}/llm-d/autoscaling/plan`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  deployLlmDAutoscaling: (experimentId: number, payload: Record<string, unknown>) =>
+    request<{ status: string; log_path: string; message: string; plan: LlmDAutoscalingPlan }>(`/api/experiments/${experimentId}/llm-d/autoscaling/deploy`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdAutoscalingObservation: (experimentId: number) => request<LlmDAutoscalingObservation>(`/api/experiments/${experimentId}/llm-d/autoscaling/observation`),
   context: (payload: { profile: string; region?: string | null; compartment_id?: string | null }) =>
     request("/api/context", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   compartments: () => request<Option[]>("/api/compartments"),

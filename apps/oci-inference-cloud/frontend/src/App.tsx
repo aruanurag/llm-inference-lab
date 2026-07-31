@@ -10,10 +10,10 @@ import {
   YAxis
 } from "recharts";
 import { api } from "./api";
-import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDPlan, Option, Profile, PromptSet, SshKeyRecord } from "./types";
+import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDAutoscalingObservation, LlmDAutoscalingPlan, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDGrafanaStatus, LlmDPlan, LlmDPlatformPlan, LlmDPlatformPreflight, LlmDPlatformStatus, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 type Status = { kind: "idle" | "loading" | "error" | "ok"; message: string };
-type ActiveAction = "idle" | "load" | "provision" | "deploy" | "benchmark" | "endpoint" | "llmd";
+type ActiveAction = "idle" | "load" | "provision" | "deploy" | "benchmark" | "endpoint" | "llmd" | "platform" | "autoscaling";
 type View = "setup" | "benchmarks" | "hackathon" | "llmd";
 type BenchmarkPreset = {
   id: string;
@@ -27,6 +27,15 @@ type BenchmarkPreset = {
   benchmarkName: string;
   promptHint: string;
   comparisonGroup: string;
+};
+type LlmDTrafficExperiment = {
+  id: string;
+  name: string;
+  workloadName: string;
+  concurrency: number;
+  maxTokens: number;
+  description: string;
+  watch: string;
 };
 type SettingHelp = { title: string; detail: string; measure: string };
 
@@ -97,6 +106,54 @@ const BENCHMARK_PRESETS: BenchmarkPreset[] = [
     benchmarkName: "throughput-concurrency-4",
     promptHint: "Concurrency mixed workload",
     comparisonGroup: "concurrency-scaling",
+  },
+];
+
+const LLMD_TRAFFIC_EXPERIMENTS: LlmDTrafficExperiment[] = [
+  {
+    id: "baseline-short",
+    name: "Baseline: short unique prompts",
+    workloadName: "LLM-D · 100 unique prompts (CSV)",
+    concurrency: 1,
+    maxTokens: 128,
+    description: "Establish a low-queue baseline before comparing any other run.",
+    watch: "TTFT p95, inter-token latency, request throughput, and near-zero queue depth.",
+  },
+  {
+    id: "cold-long-prefill",
+    name: "Cold prefill: long unique prompts",
+    workloadName: "LLM-D · cold long unique prompts (CSV)",
+    concurrency: 1,
+    maxTokens: 64,
+    description: "Long independent contexts isolate prompt-processing work without a useful shared prefix.",
+    watch: "TTFT p95 should rise; prefix-cache hit rate should stay low; KV-cache usage may increase.",
+  },
+  {
+    id: "warm-prefix-cache",
+    name: "Warm cache: shared prefix",
+    workloadName: "LLM-D · warm shared-prefix prompts (CSV)",
+    concurrency: 1,
+    maxTokens: 64,
+    description: "The long initial context is identical and each question varies only at the end.",
+    watch: "After warm-up, prefix-cache hits should rise and TTFT should improve versus the cold-long run.",
+  },
+  {
+    id: "decode-heavy",
+    name: "Decode pressure: long outputs",
+    workloadName: "LLM-D · decode-heavy prompts (CSV)",
+    concurrency: 1,
+    maxTokens: 512,
+    description: "Short inputs and long requested outputs make decode the dominant serving phase.",
+    watch: "Inter-token latency and output throughput are the primary signals; TTFT should be comparatively stable.",
+  },
+  {
+    id: "concurrency-pressure",
+    name: "Concurrency: sustained mixed traffic",
+    workloadName: "LLM-D · 150 unique prompts (CSV)",
+    concurrency: 8,
+    maxTokens: 128,
+    description: "A longer run with concurrent independent requests for queueing and autoscaling observation.",
+    watch: "Queue depth, running requests, p95 TTFT/latency, throughput, KEDA replicas, and Pending pods.",
   },
 ];
 
@@ -220,6 +277,12 @@ export function App() {
   const [llmdBenchmarkResult, setLlmdBenchmarkResult] = useState<LlmDBenchmarkResult | null>(null);
   const [llmdBenchmarks, setLlmdBenchmarks] = useState<LlmDBenchmarkRecord[]>([]);
   const [llmdSettingHelp, setLlmdSettingHelp] = useState<SettingHelp | null>(null);
+  const [lab4Preflight, setLab4Preflight] = useState<LlmDPlatformPreflight | null>(null);
+  const [lab4PlatformStatus, setLab4PlatformStatus] = useState<LlmDPlatformStatus | null>(null);
+  const [lab4PlatformPlan, setLab4PlatformPlan] = useState<LlmDPlatformPlan | null>(null);
+  const [lab4AutoscalingPlan, setLab4AutoscalingPlan] = useState<LlmDAutoscalingPlan | null>(null);
+  const [lab4Grafana, setLab4Grafana] = useState<LlmDGrafanaStatus | null>(null);
+  const [lab4Observation, setLab4Observation] = useState<LlmDAutoscalingObservation | null>(null);
 
   const [profile, setProfile] = useState("");
   const [region, setRegion] = useState("");
@@ -277,9 +340,26 @@ export function App() {
   const [llmdPrefixCaching, setLlmdPrefixCaching] = useState(true);
   const [llmdHfToken, setLlmdHfToken] = useState("");
   const [llmdPrompt, setLlmdPrompt] = useState("Explain in two sentences why LLM-D is useful when serving multiple vLLM replicas.");
+  const [llmdPromptSetId, setLlmdPromptSetId] = useState("");
+  const [llmdTrafficExperimentId, setLlmdTrafficExperimentId] = useState("");
   const [llmdBenchmarkConcurrency, setLlmdBenchmarkConcurrency] = useState(1);
   const [llmdBenchmarkRequests, setLlmdBenchmarkRequests] = useState(8);
   const [llmdBenchmarkTokens, setLlmdBenchmarkTokens] = useState(128);
+  const [lab4PlatformMode, setLab4PlatformMode] = useState("dedicated");
+  const [lab4GrafanaPassword, setLab4GrafanaPassword] = useState("");
+  const [lab4Confirmed, setLab4Confirmed] = useState(false);
+  const [lab4MinReplicas, setLab4MinReplicas] = useState(1);
+  const [lab4MaxReplicas, setLab4MaxReplicas] = useState(3);
+  const [lab4QueueThreshold, setLab4QueueThreshold] = useState(1);
+  const [lab4RunningThreshold, setLab4RunningThreshold] = useState(4);
+  const [lab4PollingInterval, setLab4PollingInterval] = useState(15);
+  const [lab4ScaleDown, setLab4ScaleDown] = useState(300);
+  const [lab4MonitoringNamespace, setLab4MonitoringNamespace] = useState("llm-d-monitoring");
+  const [lab4PrometheusService, setLab4PrometheusService] = useState("llmd-kube-prometheus-stack-prometheus");
+  const [lab4GrafanaService, setLab4GrafanaService] = useState("llmd-grafana");
+  const [lab4KedaNamespace, setLab4KedaNamespace] = useState("keda");
+  const [lab4PrometheusAddress, setLab4PrometheusAddress] = useState("http://llmd-kube-prometheus-stack-prometheus.llm-d-monitoring.svc.cluster.local:9090");
+  const [lab4PrometheusAuth, setLab4PrometheusAuth] = useState("");
 
   const activeExperiment = useMemo(
     () => experiments.find((item) => String(item.id) === selectedExperimentId),
@@ -300,6 +380,14 @@ export function App() {
   const selectedPromptSet = useMemo(
     () => promptSets.find((item) => String(item.id) === selectedPromptSetId),
     [promptSets, selectedPromptSetId]
+  );
+  const selectedLlmDPromptSet = useMemo(
+    () => promptSets.find((item) => String(item.id) === llmdPromptSetId),
+    [promptSets, llmdPromptSetId]
+  );
+  const selectedLlmDTrafficExperiment = useMemo(
+    () => LLMD_TRAFFIC_EXPERIMENTS.find((item) => item.id === llmdTrafficExperimentId),
+    [llmdTrafficExperimentId]
   );
   const selectedPreset = useMemo(
     () => BENCHMARK_PRESETS.find((item) => item.id === selectedPresetId),
@@ -328,10 +416,16 @@ export function App() {
   const endpointRunning = endpointStatus?.status === "running" && endpointStatus?.healthy;
   const endpointUrl = endpointStatus?.proxy_url || (activeExperiment ? `http://127.0.0.1:8090/api/experiments/${activeExperiment.id}/endpoint/v1` : "");
   const endpointAnalytics = endpointStatus?.analytics || {};
-  const isLlmDExperiment = activeExperiment?.kind === "llm-d-cluster";
-  const llmdDeployed = activeExperiment?.status === "llm-d-deployed" || activeExperiment?.status === "llm-d-benchmarked";
+  const isLlmDExperiment = activeExperiment?.kind === "llm-d-cluster" || activeExperiment?.kind === "llm-d-autoscaling";
+  const isLab4Experiment = activeExperiment?.kind === "llm-d-autoscaling";
+  const llmdDeployed = activeExperiment?.status === "llm-d-deployed" || activeExperiment?.status === "llm-d-benchmarked" || activeExperiment?.status === "lab4-autoscaling-ready";
   const llmdEndpointRunning = Boolean(llmdEndpointStatus?.healthy);
   const llmdBenchmarked = Boolean(llmdBenchmarkResult) || activeExperiment?.status === "llm-d-benchmarked";
+  // Deploying the monitored router advances the experiment to llm-d-deployed,
+  // but it does not remove the already-bootstrapped Prometheus/Grafana/KEDA
+  // platform. Keep its local Grafana controls visible across that transition.
+  const lab4PlatformReady = Boolean(lab4PlatformStatus?.configured) || activeExperiment?.status === "lab4-platform-ready" || activeExperiment?.status === "lab4-autoscaling-ready" || (isLab4Experiment && activeExperiment?.status === "llm-d-deployed");
+  const lab4AutoscalingReady = activeExperiment?.status === "lab4-autoscaling-ready";
   const workflowSteps = [
     {
       title: "Load OCI",
@@ -391,6 +485,13 @@ export function App() {
       state: llmdBenchmarked ? "done" : activeAction === "benchmark" ? "active" : llmdEndpointRunning ? "ready" : "todo",
     },
   ];
+  const lab4WorkflowSteps = [
+    { title: "Cluster access", detail: clusterValidation ? `${clusterValidation.ready_nodes}/${clusterValidation.total_nodes} nodes Ready` : "Select and validate the existing OKE CPU cluster", state: clusterValidation ? "done" : "ready" },
+    { title: "Platform", detail: lab4PlatformReady ? "Prometheus, Grafana, and KEDA ready" : "Validate or bootstrap observability and KEDA", state: lab4PlatformReady ? "done" : activeAction === "platform" ? "active" : clusterValidation ? "ready" : "todo" },
+    { title: "Deploy LLM-D", detail: llmdDeployed ? "Monitored router and CPU vLLM pool deployed" : "Deploy EPP Flow Control and CPU vLLM", state: llmdDeployed ? "done" : activeAction === "llmd" ? "active" : lab4PlatformReady ? "ready" : "todo" },
+    { title: "KEDA policy", detail: lab4AutoscalingReady ? "Demand policy owns the HPA" : "Apply EPP queue and running-request policy", state: lab4AutoscalingReady ? "done" : activeAction === "autoscaling" ? "active" : llmdDeployed ? "ready" : "todo" },
+    { title: "Observe", detail: lab4Observation ? "Latest observation captured" : "Generate traffic and inspect pod/node scaling", state: lab4Observation ? "done" : lab4AutoscalingReady ? "ready" : "todo" },
+  ];
 
   async function loadInitial() {
     setActiveAction("load");
@@ -446,8 +547,9 @@ export function App() {
       const experimentList = await api.experiments();
       setExperiments(experimentList);
       setSelectedExperimentId(String(experiment.id));
-      setView(experiment.kind === "llm-d-cluster" ? "llmd" : "setup");
-      setStatus({ kind: "ok", message: experiment.kind === "llm-d-cluster" ? `Experiment created: ${experiment.name}. Connect the existing cluster.` : `Experiment created: ${experiment.name}. Continue with OCI setup.` });
+      const isClusterLab = experiment.kind === "llm-d-cluster" || experiment.kind === "llm-d-autoscaling";
+      setView(isClusterLab ? "llmd" : "setup");
+      setStatus({ kind: "ok", message: isClusterLab ? `Experiment created: ${experiment.name}. Connect the existing cluster.` : `Experiment created: ${experiment.name}. Continue with OCI setup.` });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
       await loadLlmDBenchmarks();
@@ -497,7 +599,7 @@ export function App() {
 
   useEffect(() => {
     if (!activeExperiment) return;
-    if (activeExperiment.kind === "llm-d-cluster") {
+    if (activeExperiment.kind === "llm-d-cluster" || activeExperiment.kind === "llm-d-autoscaling") {
       setView("llmd");
       return;
     }
@@ -514,9 +616,13 @@ export function App() {
       setLlmdEndpointStatus(null);
       return;
     }
-    if (activeExperiment.kind === "llm-d-cluster") {
+    if (activeExperiment.kind === "llm-d-cluster" || activeExperiment.kind === "llm-d-autoscaling") {
       refreshLlmDEndpoint(false);
       loadLlmDBenchmarks();
+      if (activeExperiment.kind === "llm-d-autoscaling") {
+        refreshLab4Grafana(false);
+        refreshLab4Platform(false);
+      }
       return;
     }
     refreshEndpoint(false);
@@ -892,6 +998,37 @@ export function App() {
     }
   }
 
+  async function uploadLlmDPromptSet(file?: File) {
+    if (!file) return;
+    setStatus({ kind: "loading", message: "Uploading the LLM-D CSV prompt workload." });
+    try {
+      const prompt = await api.uploadPrompt(file);
+      setPromptSets(await api.prompts());
+      setLlmdPromptSetId(String(prompt.id));
+      setLlmdTrafficExperimentId("");
+      setLlmdBenchmarkRequests(prompt.prompt_count);
+      setStatus({ kind: "ok", message: `Uploaded ${prompt.name}: ${prompt.prompt_count} prompts. Requests was set to run every row once.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  function applyLlmDTrafficExperiment(recipeId: string) {
+    const recipe = LLMD_TRAFFIC_EXPERIMENTS.find((item) => item.id === recipeId);
+    if (!recipe) return;
+    const workload = promptSets.find((item) => item.name === recipe.workloadName);
+    if (!workload) {
+      setStatus({ kind: "error", message: `The ${recipe.workloadName} workload is not available yet. Reload the app once so it can seed the prompt sets.` });
+      return;
+    }
+    setLlmdTrafficExperimentId(recipe.id);
+    setLlmdPromptSetId(String(workload.id));
+    setLlmdBenchmarkRequests(workload.prompt_count);
+    setLlmdBenchmarkConcurrency(recipe.concurrency);
+    setLlmdBenchmarkTokens(recipe.maxTokens);
+    setStatus({ kind: "ok", message: `${recipe.name} is ready: ${workload.prompt_count} prompts, concurrency ${recipe.concurrency}, max output ${recipe.maxTokens}.` });
+  }
+
   function applyPreset(presetId: string) {
     setSelectedPresetId(presetId);
     const preset = BENCHMARK_PRESETS.find((item) => item.id === presetId);
@@ -967,6 +1104,7 @@ export function App() {
       cpu_threads_bind: llmdCpuThreadsBind || null,
       reserved_cpu: llmdReservedCpu,
       enable_prefix_caching: llmdPrefixCaching,
+      enable_autoscaling: isLab4Experiment,
       hf_token: llmdHfToken || null,
     };
   }
@@ -982,6 +1120,202 @@ export function App() {
       const result = await api.validateKubernetes({ context: kubeContext, namespace: llmdNamespace });
       setClusterValidation(result);
       setStatus({ kind: "ok", message: `Cluster reachable: ${result.ready_nodes}/${result.total_nodes} nodes Ready.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  function lab4PlatformPayload(includePassword = false) {
+    return {
+      context: kubeContext,
+      llmd_repo_path: llmdRepoPath,
+      namespace: llmdNamespace,
+      release_name: llmdReleaseName,
+      monitoring_namespace: lab4MonitoringNamespace,
+      prometheus_service: lab4PrometheusService,
+      grafana_service: lab4GrafanaService,
+      keda_namespace: lab4KedaNamespace,
+      mode: lab4PlatformMode,
+      ...(includePassword ? { grafana_admin_password: lab4GrafanaPassword } : {}),
+      confirm_cluster_changes: lab4Confirmed,
+    };
+  }
+
+  function lab4PolicyPayload() {
+    return {
+      min_replicas: lab4MinReplicas,
+      max_replicas: lab4MaxReplicas,
+      queue_threshold: lab4QueueThreshold,
+      running_request_threshold: lab4RunningThreshold,
+      polling_interval: lab4PollingInterval,
+      cooldown_period: 300,
+      scale_down_stabilization: lab4ScaleDown,
+      prometheus_address: lab4PrometheusAddress,
+      prometheus_trigger_authentication: lab4PrometheusAuth || null,
+    };
+  }
+
+  async function preflightLab4Platform() {
+    if (!activeExperiment || !kubeContext) return;
+    setActiveAction("platform");
+    setStatus({ kind: "loading", message: "Checking Prometheus, Grafana, KEDA, HPA ownership, and the LLM-D target." });
+    try {
+      const result = await api.llmdPlatformPreflight(activeExperiment.id, { context: kubeContext, namespace: llmdNamespace, release_name: llmdReleaseName, monitoring_namespace: lab4MonitoringNamespace, prometheus_service: lab4PrometheusService, grafana_service: lab4GrafanaService, keda_namespace: lab4KedaNamespace });
+      setLab4Preflight(result);
+      setStatus({ kind: "ok", message: "Lab 4 platform preflight complete. Review the detected services and warnings." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function refreshLab4Platform(showStatus = true) {
+    if (!activeExperiment) return;
+    try {
+      const result = await api.llmdPlatformStatus(activeExperiment.id);
+      setLab4PlatformStatus(result);
+      if (result.mode) setLab4PlatformMode(result.mode);
+      if (result.monitoring_namespace) setLab4MonitoringNamespace(result.monitoring_namespace);
+      if (result.prometheus_service_name) setLab4PrometheusService(result.prometheus_service_name);
+      if (result.grafana_service_name) setLab4GrafanaService(result.grafana_service_name);
+      if (result.keda_namespace) setLab4KedaNamespace(result.keda_namespace);
+      if (result.preflight) setLab4Preflight(result.preflight);
+      if (showStatus) setStatus({ kind: "ok", message: result.configured ? "Restored the saved Lab 4 platform configuration." : "No Lab 4 platform is configured for this experiment." });
+    } catch (error) {
+      if (showStatus) setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function planLab4Platform() {
+    if (!activeExperiment) return;
+    setActiveAction("platform");
+    setStatus({ kind: "loading", message: "Rendering the Lab 4 platform bootstrap plan. No cluster changes are being made." });
+    try {
+      const plan = await api.planLlmDPlatform(activeExperiment.id, lab4PlatformPayload());
+      setLab4PlatformPlan(plan);
+      setStatus({ kind: "ok", message: "Platform plan ready. Review the cluster-scoped changes before bootstrap." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function bootstrapLab4Platform() {
+    if (!activeExperiment) return;
+    setActiveAction("platform");
+    setStatus({ kind: "loading", message: "Installing the Lab 4 observability stack and KEDA. This can take several minutes." });
+    try {
+      const result = await api.bootstrapLlmDPlatform(activeExperiment.id, lab4PlatformPayload(true));
+      setLab4PlatformPlan(result.plan);
+      setLab4GrafanaPassword("");
+      await refreshLab4Platform(false);
+      setExperiments(await api.experiments());
+      setStatus({ kind: "ok", message: `${result.message} Log: ${result.log_path || "not created"}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function refreshLab4Grafana(showStatus = true) {
+    if (!activeExperiment) return;
+    try {
+      const result = await api.llmdGrafana(activeExperiment.id);
+      setLab4Grafana(result);
+      if (showStatus) setStatus({ kind: "ok", message: `Grafana tunnel ${result.status}.` });
+    } catch (error) {
+      if (showStatus) setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function startLab4Grafana() {
+    if (!activeExperiment) return;
+    setActiveAction("platform");
+    setStatus({ kind: "loading", message: "Starting a local port-forward to Grafana." });
+    try {
+      const result = await api.startLlmDGrafana(activeExperiment.id);
+      setLab4Grafana(result);
+      setStatus({ kind: "ok", message: `Grafana is available at ${result.endpoint_url}.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function stopLab4Grafana() {
+    if (!activeExperiment) return;
+    setActiveAction("platform");
+    try {
+      setLab4Grafana(await api.stopLlmDGrafana(activeExperiment.id));
+      setStatus({ kind: "ok", message: "Stopped the local Grafana tunnel." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function uninstallLab4Platform() {
+    if (!activeExperiment || !window.confirm("Remove the Lab 4-owned Prometheus, Grafana, and KEDA releases from this cluster? Existing platform services are never eligible for this action.")) return;
+    setActiveAction("platform");
+    setStatus({ kind: "loading", message: "Removing only the Lab 4-owned platform releases." });
+    try {
+      const result = await api.uninstallLlmDPlatform(activeExperiment.id, lab4PlatformPayload());
+      setLab4Grafana(null);
+      setLab4PlatformPlan(null);
+      setExperiments(await api.experiments());
+      setStatus({ kind: "ok", message: `${result.message} Log: ${result.log_path}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function planLab4Autoscaling() {
+    if (!activeExperiment) return;
+    setActiveAction("autoscaling");
+    setStatus({ kind: "loading", message: "Rendering the KEDA ScaledObject. KEDA will be the only HPA owner." });
+    try {
+      setLab4AutoscalingPlan(await api.planLlmDAutoscaling(activeExperiment.id, lab4PolicyPayload()));
+      setStatus({ kind: "ok", message: "KEDA policy plan ready. Review the PromQL selectors and replica bounds." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function deployLab4Autoscaling() {
+    if (!activeExperiment) return;
+    setActiveAction("autoscaling");
+    setStatus({ kind: "loading", message: "Applying the KEDA demand policy to the CPU vLLM pool." });
+    try {
+      const result = await api.deployLlmDAutoscaling(activeExperiment.id, lab4PolicyPayload());
+      setLab4AutoscalingPlan(result.plan);
+      setExperiments(await api.experiments());
+      setStatus({ kind: "ok", message: `${result.message} Log: ${result.log_path}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function observeLab4Autoscaling() {
+    if (!activeExperiment) return;
+    setActiveAction("autoscaling");
+    setStatus({ kind: "loading", message: "Collecting EPP demand, KEDA/HPA, pod, and node observations." });
+    try {
+      const result = await api.llmdAutoscalingObservation(activeExperiment.id);
+      setLab4Observation(result);
+      setStatus({ kind: "ok", message: `Observation captured at ${new Date(result.captured_at).toLocaleTimeString()}.` });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -1099,11 +1433,13 @@ export function App() {
     setActiveAction("benchmark");
     setStatus({ kind: "loading", message: "Running the LLM-D CPU vLLM benchmark through the local router endpoint." });
     try {
+      const requestCount = selectedLlmDPromptSet ? selectedLlmDPromptSet.prompt_count : llmdBenchmarkRequests;
       const result = await api.benchmarkLlmD(activeExperiment.id, {
-        name: `llmd-cpu-c${llmdBenchmarkConcurrency}-r${llmdBenchmarkRequests}`,
+        name: `llmd-cpu-${selectedLlmDTrafficExperiment?.id || (llmdPromptSetId ? "csv" : "prompt")}-c${llmdBenchmarkConcurrency}-r${requestCount}`,
         prompt: llmdPrompt,
+        prompt_set_id: llmdPromptSetId ? Number(llmdPromptSetId) : null,
         concurrency: llmdBenchmarkConcurrency,
-        requests: llmdBenchmarkRequests,
+        requests: requestCount,
         max_tokens: llmdBenchmarkTokens,
         temperature: 0,
       });
@@ -1199,7 +1535,7 @@ export function App() {
             <div className="divider-label">or create a new one</div>
             <label>Name<input value={experimentName} onChange={(event) => setExperimentName(event.target.value)} /></label>
             <label>Description<input value={experimentDescription} onChange={(event) => setExperimentDescription(event.target.value)} /></label>
-            <label>Experiment type<select value={experimentKind} onChange={(event) => setExperimentKind(event.target.value)}><option value="cpu-instance">OCI CPU instance / llama.cpp</option><option value="llm-d-cluster">LLM-D on existing CPU cluster</option></select></label>
+            <label>Experiment type<select value={experimentKind} onChange={(event) => setExperimentKind(event.target.value)}><option value="cpu-instance">OCI CPU instance / llama.cpp</option><option value="llm-d-cluster">Lab 3 · LLM-D on existing CPU cluster</option><option value="llm-d-autoscaling">Lab 4 · LLM-D autoscaling and observability</option></select></label>
             <button className="primary" onClick={createExperiment} disabled={isBusy}><Cloud size={16} /> Create experiment</button>
           </div>
         </section>
@@ -1227,16 +1563,16 @@ export function App() {
         <section className="experiment-heading">
           <div>
             <h1>{activeExperiment.name}</h1>
-            <p>{isLlmDExperiment ? "Deploy and tune LLM-D with CPU vLLM replicas on an existing Kubernetes cluster." : activeExperiment.description || "No description"}</p>
+            <p>{isLab4Experiment ? "Scale LLM-D CPU vLLM replicas from EPP demand and observe the result with Prometheus, Grafana, and KEDA." : isLlmDExperiment ? "Deploy and tune LLM-D with CPU vLLM replicas on an existing Kubernetes cluster." : activeExperiment.description || "No description"}</p>
           </div>
           <div className="phase-pill">{activeExperiment.status}</div>
         </section>
 
-        <StepRail steps={isLlmDExperiment ? llmdWorkflowSteps : workflowSteps} />
+        <StepRail steps={isLab4Experiment ? lab4WorkflowSteps : isLlmDExperiment ? llmdWorkflowSteps : workflowSteps} />
         <div className={`status ${status.kind}`}><StatusIcon kind={status.kind} /> <span>{status.message}</span></div>
 
         <div className="view-tabs">
-          {activeExperiment.kind === "llm-d-cluster" ? <button className={view === "llmd" ? "selected" : ""} onClick={() => setView("llmd")}>LLM-D cluster lab</button> : <>
+          {isLlmDExperiment ? <button className={view === "llmd" ? "selected" : ""} onClick={() => setView("llmd")}>{isLab4Experiment ? "Lab 4 · Autoscaling" : "LLM-D cluster lab"}</button> : <>
             <button className={view === "setup" ? "selected" : ""} onClick={() => setView("setup")}>Setup</button>
             <button className={view === "benchmarks" ? "selected" : ""} onClick={() => setView("benchmarks")} disabled={!hasProvisionedInstance}>Benchmarks</button>
             <button className={view === "hackathon" ? "selected" : ""} onClick={() => setView("hackathon")} disabled={!hasDeployed}>Hackathon</button>
@@ -1263,8 +1599,39 @@ export function App() {
             {clusterValidation?.warnings.map((warning) => <p className="muted" key={warning}>Warning: {warning}</p>)}
           </section>
 
+          {isLab4Experiment && <section className="panel">
+            <h2><Activity size={18} /> 2. Observability and autoscaling platform</h2>
+            <p className="muted">Lab 4 can use a platform team’s existing Prometheus and KEDA services, or install a dedicated lab-owned stack. The dedicated path creates cluster-scoped CRDs and is intended for an isolated lab cluster.</p>
+            <div className="form-grid">
+              <label>Platform mode<select value={lab4PlatformMode} onChange={(event) => setLab4PlatformMode(event.target.value)}><option value="dedicated">Dedicated Lab 4 stack (Prometheus, Grafana, KEDA)</option><option value="existing">Use existing platform services</option></select></label>
+              {lab4PlatformMode === "existing" && <><label>Monitoring namespace<input value={lab4MonitoringNamespace} onChange={(event) => { const value = event.target.value; setLab4MonitoringNamespace(value); setLab4PrometheusAddress(`http://${lab4PrometheusService}.${value}.svc.cluster.local:9090`); }} /></label><label>Prometheus service<input value={lab4PrometheusService} onChange={(event) => { const value = event.target.value; setLab4PrometheusService(value); setLab4PrometheusAddress(`http://${value}.${lab4MonitoringNamespace}.svc.cluster.local:9090`); }} /></label><label>Grafana service (optional)<input value={lab4GrafanaService} onChange={(event) => setLab4GrafanaService(event.target.value)} /></label><label>KEDA namespace<input value={lab4KedaNamespace} onChange={(event) => setLab4KedaNamespace(event.target.value)} /></label></>}
+              <button onClick={preflightLab4Platform} disabled={isBusy || !kubeContext}><RefreshCcw size={16} /> {activeAction === "platform" ? "Checking" : "Validate platform"}</button>
+              <button onClick={planLab4Platform} disabled={isBusy || !kubeContext}><Info size={16} /> Render platform plan</button>
+              {lab4PlatformMode === "dedicated" && <label>Grafana admin password<input type="password" value={lab4GrafanaPassword} onChange={(event) => setLab4GrafanaPassword(event.target.value)} placeholder="At least 12 characters; not retained by the app" /></label>}
+              <label className="checkbox-row"><input type="checkbox" checked={lab4Confirmed} onChange={(event) => setLab4Confirmed(event.target.checked)} />I reviewed the plan and authorize Lab 4 platform changes in this cluster.</label>
+              <button className="primary" onClick={bootstrapLab4Platform} disabled={isBusy || !lab4Confirmed || !kubeContext || (lab4PlatformMode === "dedicated" && lab4GrafanaPassword.length < 12)}><Play size={16} /> {activeAction === "platform" ? "Bootstrapping" : lab4PlatformReady ? "Reconcile platform" : "Bootstrap platform"}</button>
+            </div>
+            {lab4Preflight && <div className="metrics">
+              <Metric title="Prometheus" value={lab4Preflight.prometheus_service ? "Detected" : "Not detected"} />
+              <Metric title="Grafana" value={lab4Preflight.grafana_service ? "Detected" : "Not detected"} />
+              <Metric title="KEDA" value={lab4Preflight.keda_ready ? "Ready" : "Not detected"} />
+              <Metric title="ServiceMonitor CRD" value={lab4Preflight.service_monitor_crd ? "Installed" : "Not detected"} />
+              <Metric title="Nodes" value={lab4Preflight.node_count} />
+              <Metric title="Competing HPAs" value={lab4Preflight.competing_hpas.length} />
+            </div>}
+            {lab4Preflight?.conflicting_releases.length ? <div className="hint-row"><span><strong>Detected platform releases:</strong> {lab4Preflight.conflicting_releases.map((item) => `${item.name} (${item.namespace})`).join(", ")}. Use existing services on shared clusters.</span></div> : null}
+            {lab4Preflight?.warnings.map((warning) => <p className="muted" key={warning}>Warning: {warning}</p>)}
+            {lab4PlatformPlan && <details open><summary>Platform plan preview</summary><p className="muted">Cluster-scoped changes: {lab4PlatformPlan.cluster_scoped_changes.join(", ") || "none"}.</p><pre className="command-preview">{lab4PlatformPlan.commands.map((command) => `$ ${command.join(" ")}`).join("\n\n")}</pre><details><summary>Helm values (credentials excluded)</summary><pre className="command-preview">{lab4PlatformPlan.values}</pre></details><p className="muted">Dashboards: {lab4PlatformPlan.dashboards.join(", ") || "existing platform manages dashboards"}</p></details>}
+            {lab4PlatformReady && <div className="endpoint-card">
+              <div><span className={`endpoint-dot ${lab4Grafana?.healthy ? "running" : ""}`} /><strong>{lab4Grafana?.healthy ? "Grafana tunnel running" : "Grafana tunnel stopped"}</strong><p>{lab4Grafana?.endpoint_url || "Start a local tunnel; Grafana is never exposed publicly by this lab."}</p></div>
+              <div className="endpoint-actions"><button className="primary" onClick={startLab4Grafana} disabled={isBusy}>Open Grafana locally</button><button onClick={() => refreshLab4Grafana()} disabled={isBusy}>Refresh</button><button onClick={stopLab4Grafana} disabled={isBusy || !lab4Grafana}>Stop</button></div>
+            </div>}
+            {lab4Grafana?.healthy && <p className="muted">Open <a href={lab4Grafana.endpoint_url} target="_blank" rel="noreferrer">Grafana</a> and sign in with the admin password supplied at bootstrap. Imported LLM-D dashboards appear under Dashboards.</p>}
+            {lab4PlatformReady && lab4PlatformMode === "dedicated" && <button className="danger" onClick={uninstallLab4Platform} disabled={isBusy || !lab4Confirmed}>Remove Lab 4-owned platform</button>}
+          </section>}
+
           <section className="panel">
-            <h2><Rocket size={18} /> 2. Configure LLM-D and CPU vLLM</h2>
+            <h2><Rocket size={18} /> {isLab4Experiment ? "3." : "2."} Configure LLM-D and CPU vLLM</h2>
             <p className="muted">Use a pinned local LLM-D checkout. The workbench layers this experiment’s replica, model, CPU, memory, KV-cache, and context settings over its supported CPU vLLM recipe.</p>
             <div className="form-grid">
               <label><ConfigLabel label="LLM-D checkout" help={LLMD_SETTING_HELP.checkout} onShow={setLlmdSettingHelp} /><input value={llmdRepoPath} onChange={(event) => { setLlmdRepoPath(event.target.value); setLlmdCheckout(null); }} placeholder="/absolute/path/to/llm-d" /></label>
@@ -1297,11 +1664,46 @@ export function App() {
             <p className="muted">The deploy action applies these prerequisites and the generated overlay to the selected context. Review the pinned checkout and resource requests before using it.</p>
             <pre className="command-preview">{llmdPlan.commands.map((command) => `$ ${command.join(" ")}`).join("\n\n")}</pre>
             <details><summary>Generated CPU vLLM overlay</summary><pre className="command-preview">{llmdPlan.overlay}</pre></details>
+            {llmdPlan.monitoring_manifest && <details><summary>Generated EPP ServiceMonitor</summary><pre className="command-preview">{llmdPlan.monitoring_manifest}</pre></details>}
           </section>}
 
-          {(activeExperiment.status === "llm-d-deployed" || activeExperiment.status === "llm-d-benchmarked" || llmdEndpointStatus) && <>
+          {isLab4Experiment && llmdDeployed && <section className="panel">
+            <h2><Activity size={18} /> 4. KEDA demand policy</h2>
+            <p className="muted">KEDA queries Prometheus for EPP queue depth and running requests, then owns the generated HPA. CPU utilization is deliberately not used as the primary LLM scaling signal.</p>
+            <div className="form-grid">
+              <label>Minimum warm replicas<input type="number" min={1} value={lab4MinReplicas} onChange={(event) => setLab4MinReplicas(Number(event.target.value))} /></label>
+              <label>Maximum replicas<input type="number" min={1} value={lab4MaxReplicas} onChange={(event) => setLab4MaxReplicas(Number(event.target.value))} /></label>
+              <label>Queue threshold / replica<input type="number" min={1} value={lab4QueueThreshold} onChange={(event) => setLab4QueueThreshold(Number(event.target.value))} /></label>
+              <label>Running requests / replica<input type="number" min={1} value={lab4RunningThreshold} onChange={(event) => setLab4RunningThreshold(Number(event.target.value))} /></label>
+              <label>KEDA polling seconds<input type="number" min={5} value={lab4PollingInterval} onChange={(event) => setLab4PollingInterval(Number(event.target.value))} /></label>
+              <label>Scale-down stabilization seconds<input type="number" min={0} value={lab4ScaleDown} onChange={(event) => setLab4ScaleDown(Number(event.target.value))} /></label>
+              <label className="wide">Prometheus server address<input value={lab4PrometheusAddress} onChange={(event) => setLab4PrometheusAddress(event.target.value)} /></label>
+              <label>KEDA TriggerAuthentication (optional)<input value={lab4PrometheusAuth} onChange={(event) => setLab4PrometheusAuth(event.target.value)} placeholder="Existing namespace-scoped auth/CA reference" /></label>
+              <button onClick={planLab4Autoscaling} disabled={isBusy}><Info size={16} /> Render KEDA policy</button>
+              <button className="primary" onClick={deployLab4Autoscaling} disabled={isBusy || lab4MaxReplicas < lab4MinReplicas}><Play size={16} /> {activeAction === "autoscaling" ? "Applying" : lab4AutoscalingReady ? "Update KEDA policy" : "Apply KEDA policy"}</button>
+            </div>
+            <div className="hint-row"><span><strong>Signal meaning:</strong> a queue reflects requests EPP cannot immediately dispatch; running requests capture active concurrency. Kubernetes uses the larger calculated replica target. A Pending model pod then gives OKE Cluster Autoscaler the CPU/memory-request signal to add a node.</span></div>
+            {lab4AutoscalingPlan && <details open><summary>KEDA policy preview</summary><pre className="command-preview">{lab4AutoscalingPlan.manifest}</pre></details>}
+          </section>}
+
+          {isLab4Experiment && lab4AutoscalingReady && <section className="panel">
+            <h2><Activity size={18} /> 5. Generate traffic and observe scaling</h2>
+            <p className="muted">Run a sustained concurrent benchmark, then capture observations. Pod scale-out follows EPP demand; node scale-out happens only if a new CPU vLLM pod is Pending because it cannot fit on the current nodes.</p>
+            <div className="form-grid"><button className="primary" onClick={runLlmDBenchmark} disabled={isBusy}><Play size={16} /> Run scale-out load</button><button onClick={observeLab4Autoscaling} disabled={isBusy}>Capture scaling observation</button></div>
+            {lab4Observation && <div className="metrics">
+              <Metric title="EPP queue depth" value={formatNumber(lab4Observation.queue_depth)} />
+              <Metric title="Running requests" value={formatNumber(lab4Observation.running_requests)} />
+              <Metric title="Ready / desired pods" value={`${lab4Observation.ready_replicas}/${lab4Observation.hpa_desired_replicas ?? lab4Observation.desired_replicas ?? "n/a"}`} />
+              <Metric title="Pending pods" value={lab4Observation.pending_pods.length} />
+              <Metric title="Nodes" value={lab4Observation.node_count} />
+              <Metric title="KEDA Ready" value={lab4Observation.scaled_object_ready} />
+            </div>}
+            {lab4Observation?.pending_pods.length ? <p className="muted">Pending vLLM pods: {lab4Observation.pending_pods.join(", ")}. If the managed node pool has capacity, this is the OKE Cluster Autoscaler scale-out signal.</p> : null}
+          </section>}
+
+          {(llmdDeployed || activeExperiment.status === "llm-d-benchmarked" || llmdEndpointStatus) && <>
             <section className="panel">
-              <h2><Cloud size={18} /> 3. Run inference through LLM-D</h2>
+              <h2><Cloud size={18} /> {isLab4Experiment ? "6." : "3."} Run inference through LLM-D</h2>
               <p className="muted">The app maintains a local `kubectl port-forward` to the LLM-D router. This is an OpenAI-compatible endpoint; the router selects a healthy CPU vLLM replica.</p>
               <div className="endpoint-card">
                 <div>
@@ -1322,15 +1724,39 @@ export function App() {
               {llmdInferenceResponse && <details open><summary>Latest OpenAI-compatible response</summary><pre className="command-preview">{JSON.stringify(llmdInferenceResponse, null, 2)}</pre></details>}
             </section>
 
+            {isLab4Experiment && <section className="panel">
+              <h2><Activity size={18} /> 7. Traffic experiment recipes</h2>
+              <p className="muted">Start with the baseline, then change one workload property at a time. Each recipe uses a fixed prompt set and applies its recommended concurrency and output length.</p>
+              <div className="traffic-recipe-grid">
+                {LLMD_TRAFFIC_EXPERIMENTS.map((recipe) => <button key={recipe.id} className={`traffic-recipe ${llmdTrafficExperimentId === recipe.id ? "selected" : ""}`} onClick={() => applyLlmDTrafficExperiment(recipe.id)} disabled={isBusy}>
+                  <strong>{recipe.name}</strong><span>{recipe.description}</span><small>Watch: {recipe.watch}</small>
+                </button>)}
+              </div>
+              {selectedLlmDTrafficExperiment && <p className="muted">Selected: <strong>{selectedLlmDTrafficExperiment.name}</strong>. Run it below, then refresh Grafana and capture a scaling observation.</p>}
+            </section>}
+
             <section className="panel">
-              <h2><Activity size={18} /> 4. Benchmark this configuration</h2>
+              <h2><Activity size={18} /> {isLab4Experiment ? "8." : "4."} Benchmark this configuration</h2>
               <p className="muted">This benchmark goes through the local LLM-D endpoint. After changing any CPU/vLLM setting above, redeploy and run this exact workload again to make a fair comparison.</p>
               <div className="form-grid">
+                <label>Traffic source<select value={llmdPromptSetId} onChange={(event) => {
+                  const nextId = event.target.value;
+                  setLlmdPromptSetId(nextId);
+                  setLlmdTrafficExperimentId("");
+                  const promptSet = promptSets.find((item) => String(item.id) === nextId);
+                  if (promptSet) setLlmdBenchmarkRequests(promptSet.prompt_count);
+                }}>
+                  <option value="">Custom text prompt</option>
+                  {promptSets.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.prompt_count} prompts</option>)}
+                </select></label>
+                <label>Upload CSV<input type="file" accept=".csv,.txt,.md" onChange={(event) => uploadLlmDPromptSet(event.target.files?.[0])} /></label>
                 <label>Concurrency<input type="number" min={1} value={llmdBenchmarkConcurrency} onChange={(event) => setLlmdBenchmarkConcurrency(Number(event.target.value))} /></label>
-                <label>Requests<input type="number" min={1} value={llmdBenchmarkRequests} onChange={(event) => setLlmdBenchmarkRequests(Number(event.target.value))} /></label>
+                {selectedLlmDPromptSet ? <label>Requests (CSV rows)<input value={selectedLlmDPromptSet.prompt_count} disabled readOnly /></label> : <label>Requests<input type="number" min={1} value={llmdBenchmarkRequests} onChange={(event) => setLlmdBenchmarkRequests(Number(event.target.value))} /></label>}
                 <label>Max output tokens<input type="number" min={1} value={llmdBenchmarkTokens} onChange={(event) => setLlmdBenchmarkTokens(Number(event.target.value))} /></label>
                 <button className="primary" onClick={runLlmDBenchmark} disabled={isBusy}><Activity size={16} /> {activeAction === "benchmark" ? "Benchmarking" : "Run benchmark"}</button>
               </div>
+              {!selectedLlmDPromptSet && <label className="wide">Simple benchmark prompt<textarea value={llmdPrompt} onChange={(event) => setLlmdPrompt(event.target.value)} rows={4} placeholder="Write the prompt to repeat for this benchmark." /></label>}
+              {selectedLlmDPromptSet ? <p className="muted"><strong>{selectedLlmDPromptSet.name}</strong> · {selectedLlmDPromptSet.description} This run sends each CSV row exactly once.</p> : <p className="muted">This text is repeated for the number of Requests selected above. Choose a seeded CSV workload or upload a CSV with a <code>prompt</code>, <code>text</code>, <code>input</code>, or <code>message</code> column.</p>}
               {llmdBenchmarkResult && <div className="metrics">
                 <Metric title="Latency p95" value={formatSeconds(metric(llmdBenchmarkResult.summary, "latency_seconds.p95"))} />
                 <Metric title="TTFT p95" value={formatSeconds(metric(llmdBenchmarkResult.summary, "ttft_seconds.p95"))} />
@@ -1673,9 +2099,10 @@ function LlmDBenchmarkTable({ benchmarks }: { benchmarks: LlmDBenchmarkRecord[] 
   if (!benchmarks.length) return <p className="muted">No LLM-D benchmark runs yet. Run the baseline workload above to start the comparison history.</p>;
   return (
     <table>
-      <thead><tr><th>Run</th><th>Status</th><th>Model</th><th>Concurrency</th><th>Requests</th><th>Max tokens</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Saved</th></tr></thead>
+      <thead><tr><th>Run</th><th>Workload</th><th>Status</th><th>Model</th><th>Concurrency</th><th>Requests</th><th>Max tokens</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Saved</th></tr></thead>
       <tbody>{benchmarks.map((item) => <tr key={item.id}>
         <td>{item.name}</td>
+        <td>{item.summary.prompt_set_name || "Custom prompt"}</td>
         <td>{Number(item.summary.successful_requests || 0) > 0 ? `${item.summary.successful_requests}/${item.summary.requests} succeeded` : "Failed: no responses"}</td>
         <td>{item.summary.model || "n/a"}</td>
         <td>{item.summary.concurrency}</td>
