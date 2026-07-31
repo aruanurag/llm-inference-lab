@@ -102,6 +102,26 @@ The recipes are designed to isolate one variable at a time. Record results local
 | Decode pressure vs. baseline | End-to-end request duration rises and completed requests/sec falls; ITL may stay stable at concurrency 1. | Longer outputs consume more decode time without necessarily increasing per-token latency. |
 | Concurrency 4 or 8 | Running requests and/or EPP queue depth rise; p95 TTFT/latency can rise; a KEDA scale event becomes possible. | Concurrent demand is the pod-autoscaling input. |
 
+### Dashboard walkthrough
+
+These dashboard captures show the expected relationships between the workload shape and the serving metrics. They are illustrative results from the lab workflow; repeat the recipes on your own cluster before using the values for capacity planning.
+
+**Baseline short unique prompts.** A cache-cold, one-client reference: low TTFT and ITL, no queueing, and negligible current KV-cache use after the request completes.
+
+![Baseline short unique prompts](assets/baseline-short-unique.png)
+
+**Cold long unique prompts.** Long independent input increases TTFT through prefill work while cache-hit rate stays at zero and inter-token latency remains stable.
+
+![Cold long unique prompts](assets/cold-long-unique.png)
+
+**Warm shared-prefix prompts.** Repeating a long initial context raises the prefix-cache hit rate and reduces TTFT after the cache warms. The first cache miss can remain visible in p99.
+
+![Warm shared-prefix prompts](assets/warm-shared-prefix.png)
+
+**Decode pressure.** The detailed vLLM dashboard relates end-to-end request latency to prompt/generation token throughput, scheduler state, and cache utilization. Long outputs increase request duration; at concurrency 1, ITL can remain close to the baseline.
+
+![Decode pressure detailed dashboard](assets/decode-detailed.png)
+
 ### Experiment 5: Concurrency-8 sustained traffic and autoscaling
 
 Run the sustained mixed-traffic recipe with concurrency 8 after applying the KEDA policy. KEDA evaluates the larger replica request from its two Prometheus triggers. For example, when the active-request trigger observes eight requests against a threshold of four requests per replica:
@@ -113,6 +133,10 @@ ceil(8 / 4) = 2 desired CPU vLLM replicas
 ```
 
 This is pod scaling. If the second model-server pod cannot fit on current capacity, it becomes Pending; that unschedulable pod is the separate signal OKE Cluster Autoscaler uses to add a managed node. Do not delete a Pending replica while observing this stage. Watch for a new OKE node, then for the pod to advance from `Pending` to `ContainerCreating` and finally `Running`. Record timings and screenshots only in a private location.
+
+**Sustained mixed traffic at concurrency 8.** Eight active requests exceed the default KEDA running-request threshold of four per replica. TTFT rises under load, while the active-request signal can request additional capacity even if the EPP queue is not persistently non-zero.
+
+![Concurrency-8 EPP demand](assets/concurrency-epp-demand.png)
 
 ## Interpreting the Scale Event
 
