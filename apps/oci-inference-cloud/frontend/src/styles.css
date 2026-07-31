@@ -573,6 +573,36 @@ header p,
   align-items: end;
 }
 
+.traffic-recipe-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.traffic-recipe {
+  min-height: 146px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  text-align: left;
+  white-space: normal;
+}
+
+.traffic-recipe strong {
+  color: var(--text);
+}
+
+.traffic-recipe span,
+.traffic-recipe small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.traffic-recipe.selected {
+  border-color: var(--blue);
+  background: #eaf4fb;
+}
+
 .advanced-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -711,6 +741,7 @@ th {
   }
 
   .form-grid,
+  .traffic-recipe-grid,
   .advanced-grid,
   .metrics,
   .charts,

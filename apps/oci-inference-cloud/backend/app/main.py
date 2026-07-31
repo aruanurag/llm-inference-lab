@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
-from . import endpoint, llmd, llmd_endpoint, oci_cli, state
+from . import autoscaling, endpoint, grafana_endpoint, llmd, llmd_endpoint, oci_cli, state
 from .benchmark import run_benchmark, write_benchmark_result
 from .config import BENCHMARKS_DIR, PROMPTS_DIR, ensure_app_dirs
 from .deploy import deploy_llama_cpp, list_deploy_models
@@ -37,7 +37,17 @@ from .schemas import (
     LlmDBenchmarkRecord,
     LlmDDeploymentRequest,
     LlmDEndpointStatus,
+    LlmDAutoscalingObservation,
+    LlmDAutoscalingPlan,
+    LlmDAutoscalingRequest,
+    LlmDAutoscalingResult,
+    LlmDGrafanaStatus,
     LlmDInferenceRequest,
+    LlmDPlatformBootstrapRequest,
+    LlmDPlatformPlan,
+    LlmDPlatformPreflightRequest,
+    LlmDPlatformResult,
+    LlmDPlatformStatus,
     LlmDPlan,
     Option,
     Profile,
@@ -149,6 +159,175 @@ def deploy_llmd(experiment_id: int, request: LlmDDeploymentRequest) -> LlmDDeplo
         raise api_error(exc) from exc
 
 
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/preflight")
+def llmd_autoscaling_preflight(experiment_id: int, request: LlmDPlatformPreflightRequest) -> dict[str, Any]:
+    try:
+        state.get_experiment(experiment_id)
+        return autoscaling.preflight(
+            request.context, request.namespace, request.release_name,
+            request.monitoring_namespace, request.prometheus_service, request.grafana_service, request.keda_namespace,
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/platform/plan", response_model=LlmDPlatformPlan)
+def plan_llmd_platform(experiment_id: int, request: LlmDPlatformBootstrapRequest) -> LlmDPlatformPlan:
+    try:
+        state.get_experiment(experiment_id)
+        return LlmDPlatformPlan(**autoscaling.platform_plan(request.context, request.llmd_repo_path, request.mode))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/platform/bootstrap", response_model=LlmDPlatformResult)
+def bootstrap_llmd_platform(experiment_id: int, request: LlmDPlatformBootstrapRequest) -> LlmDPlatformResult:
+    try:
+        state.get_experiment(experiment_id)
+        if not request.confirm_cluster_changes:
+            raise ValueError("Confirm the cluster-scoped changes after reviewing the platform plan before bootstrapping.")
+        existing_platform = state.get_setting(f"lab4:{experiment_id}")
+        if request.mode == "dedicated" and not request.grafana_admin_password and not existing_platform.get("owned"):
+            raise ValueError("A Grafana admin password is required for a dedicated Lab 4 platform stack.")
+        preflight = autoscaling.preflight(
+            request.context, request.namespace, request.release_name,
+            request.monitoring_namespace, request.prometheus_service, request.grafana_service, request.keda_namespace,
+        )
+        if request.mode == "dedicated" and preflight["conflicting_releases"] and not existing_platform.get("owned"):
+            raise ValueError(
+                "A Prometheus/Grafana or KEDA Helm release is already present in this cluster. "
+                "Choose 'Use existing platform services' rather than taking ownership of it."
+            )
+        if request.mode == "existing" and not (preflight["service_monitor_crd"] and preflight["scaled_object_crd"] and preflight["prometheus_service"] and preflight["keda_ready"]):
+            raise ValueError(
+                "The existing platform is incomplete for Lab 4. It must provide the ServiceMonitor CRD, KEDA ScaledObject CRD, a reachable Prometheus service, and a ready KEDA operator."
+            )
+        plan, log_path = autoscaling.bootstrap(request.context, request.llmd_repo_path, request.mode, request.grafana_admin_password or "")
+        # Never persist the password. The mode and context are enough to
+        # restart the local Grafana tunnel and to guard uninstall actions.
+        state.set_setting(f"lab4:{experiment_id}", {
+            "context": request.context, "mode": request.mode, "llmd_repo_path": request.llmd_repo_path, "owned": request.mode == "dedicated",
+            "monitoring_namespace": request.monitoring_namespace, "prometheus_service": request.prometheus_service,
+            "grafana_service": request.grafana_service, "keda_namespace": request.keda_namespace,
+        })
+        state.update_experiment(experiment_id, status="lab4-platform-ready")
+        return LlmDPlatformResult(status="ok", log_path=str(log_path), message="Lab 4 platform is ready. Deploy the monitored LLM-D router, then apply the KEDA policy.", plan=LlmDPlatformPlan(**plan))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/autoscaling/platform", response_model=LlmDPlatformStatus)
+def llmd_platform_status(experiment_id: int) -> LlmDPlatformStatus:
+    try:
+        state.get_experiment(experiment_id)
+        config = state.get_setting(f"lab4:{experiment_id}")
+        if not config:
+            return LlmDPlatformStatus(configured=False)
+        deployment = state.get_setting(f"llmd:{experiment_id}")
+        preflight = autoscaling.preflight(
+            config["context"], deployment.get("namespace", "llm-d-lab"), deployment.get("release_name", "llm-d-lab"),
+            config.get("monitoring_namespace", autoscaling.MONITORING_NAMESPACE),
+            config.get("prometheus_service", f"{autoscaling.PROMETHEUS_RELEASE}-kube-prometheus-stack-prometheus"),
+            config.get("grafana_service", f"{autoscaling.PROMETHEUS_RELEASE}-grafana"),
+            config.get("keda_namespace", autoscaling.KEDA_NAMESPACE),
+        )
+        return LlmDPlatformStatus(
+            configured=True, mode=config.get("mode"), owned=bool(config.get("owned")), context=config.get("context"),
+            monitoring_namespace=config.get("monitoring_namespace"), prometheus_service_name=config.get("prometheus_service"),
+            grafana_service_name=config.get("grafana_service"), keda_namespace=config.get("keda_namespace"), preflight=preflight,
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/platform/uninstall")
+def uninstall_llmd_platform(experiment_id: int, request: LlmDPlatformBootstrapRequest) -> dict[str, str]:
+    try:
+        platform = state.get_setting(f"lab4:{experiment_id}")
+        if not request.confirm_cluster_changes:
+            raise ValueError("Confirm that you want to remove the Lab 4-owned platform releases.")
+        if not platform.get("owned") or platform.get("mode") != "dedicated":
+            raise ValueError("This experiment did not create a dedicated Lab 4 platform stack, so it cannot remove platform services.")
+        if platform.get("context") != request.context:
+            raise ValueError("The selected context does not match the Lab 4-owned platform stack.")
+        log_path = autoscaling.uninstall_platform(request.context)
+        state.set_setting(f"lab4:{experiment_id}", {"context": request.context, "mode": "dedicated", "owned": False})
+        return {"status": "ok", "log_path": str(log_path), "message": "Removed the Lab 4-owned Prometheus, Grafana, and KEDA releases."}
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/grafana", response_model=LlmDGrafanaStatus)
+def llmd_grafana_status(experiment_id: int) -> LlmDGrafanaStatus:
+    state.get_experiment(experiment_id)
+    return LlmDGrafanaStatus(**grafana_endpoint.status(experiment_id))
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/grafana/start", response_model=LlmDGrafanaStatus)
+def start_llmd_grafana(experiment_id: int) -> LlmDGrafanaStatus:
+    try:
+        state.get_experiment(experiment_id)
+        return LlmDGrafanaStatus(**grafana_endpoint.start(experiment_id))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/grafana/stop", response_model=LlmDGrafanaStatus)
+def stop_llmd_grafana(experiment_id: int) -> LlmDGrafanaStatus:
+    state.get_experiment(experiment_id)
+    return LlmDGrafanaStatus(**grafana_endpoint.stop(experiment_id))
+
+
+def deployed_llmd_config(experiment_id: int) -> dict[str, Any]:
+    config = state.get_setting(f"llmd:{experiment_id}")
+    if not config:
+        raise RuntimeError("Deploy the monitored LLM-D CPU vLLM pool before configuring autoscaling.")
+    if not config.get("enable_autoscaling"):
+        raise RuntimeError("Redeploy LLM-D with Lab 4 monitoring and EPP Flow Control enabled before configuring autoscaling.")
+    return config
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/plan", response_model=LlmDAutoscalingPlan)
+def plan_llmd_autoscaling(experiment_id: int, request: LlmDAutoscalingRequest) -> LlmDAutoscalingPlan:
+    try:
+        state.get_experiment(experiment_id)
+        config = deployed_llmd_config(experiment_id)
+        return LlmDAutoscalingPlan(**autoscaling.autoscaling_plan(config, request.model_dump()))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/autoscaling/deploy", response_model=LlmDAutoscalingResult)
+def deploy_llmd_autoscaling(experiment_id: int, request: LlmDAutoscalingRequest) -> LlmDAutoscalingResult:
+    try:
+        state.get_experiment(experiment_id)
+        config = deployed_llmd_config(experiment_id)
+        policy = request.model_dump()
+        platform = state.get_setting(f"lab4:{experiment_id}")
+        policy.update({key: platform.get(key) for key in ("monitoring_namespace", "prometheus_service") if platform.get(key)})
+        plan, log_path = autoscaling.apply_autoscaling(config, policy)
+        state.set_setting(f"lab4-policy:{experiment_id}", policy)
+        state.update_experiment(experiment_id, status="lab4-autoscaling-ready")
+        return LlmDAutoscalingResult(status="ok", log_path=str(log_path), message="KEDA now owns the HPA for the CPU vLLM Deployment. Generate sustained traffic and observe the demand metrics.", plan=LlmDAutoscalingPlan(**plan))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/autoscaling/observation", response_model=LlmDAutoscalingObservation)
+def llmd_autoscaling_observation(experiment_id: int) -> LlmDAutoscalingObservation:
+    try:
+        config = deployed_llmd_config(experiment_id)
+        policy = state.get_setting(f"lab4-policy:{experiment_id}")
+        if not policy:
+            raise RuntimeError("Apply a Lab 4 KEDA policy before collecting observations.")
+        snapshot = autoscaling.observation(config, policy)
+        timeline = state.get_setting(f"lab4-timeline:{experiment_id}", {"items": []})
+        state.set_setting(f"lab4-timeline:{experiment_id}", {"items": (timeline.get("items", []) + [snapshot])[-100:]})
+        return LlmDAutoscalingObservation(**snapshot)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
 @app.get("/api/experiments/{experiment_id}/llm-d/endpoint", response_model=LlmDEndpointStatus)
 def llmd_endpoint_status(experiment_id: int) -> LlmDEndpointStatus:
     state.get_experiment(experiment_id)
@@ -185,10 +364,15 @@ async def benchmark_llmd(experiment_id: int, request: LlmDBenchmarkRequest) -> L
         state.get_experiment(experiment_id)
         endpoint_state = llmd_endpoint.start(experiment_id)
         config = llmd_endpoint.deployment_config(experiment_id)
+        prompt_set = state.get_prompt_set(request.prompt_set_id) if request.prompt_set_id else None
+        prompts = read_prompt_set(prompt_set["path"]) if prompt_set else [request.prompt]
+        prompts = [prompt.strip() for prompt in prompts if prompt.strip()]
+        if not prompts:
+            raise RuntimeError("Provide a prompt or select a CSV prompt set with at least one prompt.")
         result = await run_benchmark(
             url=f"{endpoint_state['endpoint_url']}/v1/chat/completions",
             model=config["model"],
-            prompts=[request.prompt],
+            prompts=prompts,
             concurrency=request.concurrency,
             requests=request.requests,
             max_tokens=request.max_tokens,
@@ -201,6 +385,8 @@ async def benchmark_llmd(experiment_id: int, request: LlmDBenchmarkRequest) -> L
             "model": config["model"],
             "namespace": config["namespace"],
             "release_name": config["release_name"],
+            "prompt_set_id": request.prompt_set_id,
+            "prompt_set_name": prompt_set["name"] if prompt_set else "Custom prompt",
         })
         output_dir = BENCHMARKS_DIR / "llm-d" / str(experiment_id)
         raw_path, summary_path = write_benchmark_result(output_dir, request.name, result)
@@ -474,13 +660,15 @@ def prompt_sets() -> list[PromptSet]:
 @app.post("/api/prompts", response_model=PromptSet)
 async def upload_prompt(file: UploadFile = File(...)) -> PromptSet:
     text = (await file.read()).decode("utf-8")
-    prompts = parse_prompt_file(text)
+    filename = file.filename or "prompts.txt"
+    prompts = parse_prompt_file(text, filename)
     if not prompts:
         raise HTTPException(status_code=400, detail="Prompt file did not contain any prompts.")
-    safe_name = "".join(char if char.isalnum() or char in ("-", "_", ".") else "-" for char in file.filename or "prompts.txt")
+    safe_name = "".join(char if char.isalnum() or char in ("-", "_", ".") else "-" for char in filename)
     path = PROMPTS_DIR / f"{int(time.time())}-{safe_name}"
     path.write_text(text, encoding="utf-8")
-    return PromptSet(**state.insert_prompt_set(file.filename or safe_name, path, len(prompts), "Uploaded prompt file. Prompts are separated by blank lines."))
+    description = "Uploaded CSV prompt set." if Path(filename).suffix.lower() == ".csv" else "Uploaded prompt file. Prompts are separated by blank lines."
+    return PromptSet(**state.insert_prompt_set(filename, path, len(prompts), description))
 
 
 @app.post("/api/benchmarks", response_model=BenchmarkRecord)

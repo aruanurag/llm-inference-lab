@@ -89,6 +89,10 @@ labs/*/results/**/*.csv
 labs/*/results/**/*.log
 labs/*/results/**/*.txt
 
+# Private, locally captured dashboard images and notes from Lab 4 runs.
+labs/04-llm-d-autoscaling-on-oke/assets/
+labs/04-llm-d-autoscaling-on-oke/*-local.md
+
 # Preserve intentional placeholders and hand-written observations.
 !labs/*/results/**/.gitkeep
 !labs/*/results/observations.md

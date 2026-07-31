@@ -134,6 +134,26 @@ def repo_root(repo_path: str) -> Path:
     return root
 
 
+def autoscaling_router_values(root: Path) -> list[Path]:
+    """Return the upstream router overlays required for the Lab 4 flow.
+
+    Keep this check close to the checkout validation rather than silently
+    producing a router without Flow Control or a ServiceMonitor. Those two
+    features are the source of truth for the KEDA experiment.
+    """
+
+    values = [
+        root / "guides" / "recipes" / "router" / "features" / "monitoring.values.yaml",
+        root / "guides" / "workload-autoscaling" / "keda-epp" / "router.values.yaml",
+    ]
+    missing = [str(path.relative_to(root)) for path in values if not path.exists()]
+    if missing:
+        raise RuntimeError(
+            "This LLM-D checkout does not include the Lab 4 autoscaling overlays. Missing: " + ", ".join(missing)
+        )
+    return values
+
+
 def default_checkout_path() -> Path:
     return LLMD_DIR / "source"
 
@@ -247,22 +267,98 @@ patches:
     return overlay_path, overlay
 
 
+def render_epp_service_monitor(config: dict[str, Any], experiment_id: int) -> tuple[Path, str] | tuple[None, None]:
+    """Render the Prometheus discovery resources required by Lab 4.
+
+    Current standalone-router chart values enable the EPP metrics endpoint but
+    do not render a ServiceMonitor. Keep this resource experiment-local and
+    label it as app-owned, rather than relying on a chart-version detail.
+    """
+
+    if not config.get("enable_autoscaling"):
+        return None, None
+    namespace = checked_name(config["namespace"], "Namespace")
+    release = checked_name(config["release_name"], "Release name")
+    monitor_dir = LLMD_DIR / f"experiment-{experiment_id}" / "monitoring"
+    monitor_dir.mkdir(parents=True, exist_ok=True)
+    common_labels = {"app.kubernetes.io/managed-by": "oci-inference-cloud", "lab.llm-inference.ai": "lab-4"}
+    epp_monitor = {
+        "apiVersion": "monitoring.coreos.com/v1",
+        "kind": "ServiceMonitor",
+        "metadata": {
+            "name": "llm-d-epp",
+            "namespace": namespace,
+            "labels": common_labels,
+        },
+        "spec": {
+            "selector": {"matchLabels": {"app.kubernetes.io/name": f"{release}-epp"}},
+            # EPP protects its metrics endpoint. Prometheus runs with a
+            # Kubernetes service-account token, which the router validates;
+            # without this setting every target is discovered but returns 401.
+            "endpoints": [{
+                "port": "http-metrics", "path": "/metrics", "interval": "10s", "scheme": "http",
+                "bearerTokenFile": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+            }],
+        },
+    }
+    # The LLM-D router exposes EPP demand metrics through a Service. CPU vLLM
+    # model servers expose their Prometheus endpoint directly on the named
+    # ``modelserver`` port, so they require a PodMonitor. Without it Grafana
+    # can show EPP pool health but every vLLM panel remains empty.
+    vllm_monitor = {
+        "apiVersion": "monitoring.coreos.com/v1",
+        "kind": "PodMonitor",
+        "metadata": {
+            "name": "llm-d-cpu-vllm",
+            "namespace": namespace,
+            "labels": common_labels,
+        },
+        "spec": {
+            "selector": {
+                "matchLabels": {
+                    "llm-d.ai/guide": "optimized-baseline",
+                    "llm-d.ai/role": "decode",
+                },
+            },
+            "podMetricsEndpoints": [{
+                "port": "modelserver", "path": "/metrics", "interval": "10s", "scheme": "http",
+            }],
+        },
+    }
+    manifest = {"apiVersion": "v1", "kind": "List", "items": [epp_monitor, vllm_monitor]}
+    path = monitor_dir / "monitoring.json"
+    rendered = json.dumps(manifest, indent=2) + "\n"
+    path.write_text(rendered, encoding="utf-8")
+    return path, rendered
+
+
 def make_plan(config: dict[str, Any], experiment_id: int) -> dict[str, Any]:
     root = repo_root(config["llmd_repo_path"])
     overlay_path, overlay = render_overlay(config, experiment_id)
+    monitor_path, monitor_manifest = render_epp_service_monitor(config, experiment_id)
     context, namespace, release = config["context"], config["namespace"], config["release_name"]
+    router_command = ["helm", "upgrade", "--install", release, ROUTER_CHART, "-f", str(root / "guides" / "recipes" / "router" / "base.values.yaml"), "-f", str(root / "guides" / "optimized-baseline" / "router" / "optimized-baseline.values.yaml")]
+    if config.get("enable_autoscaling"):
+        for path in autoscaling_router_values(root):
+            router_command.extend(["-f", str(path)])
+    router_command.extend(["--namespace", namespace, "--kube-context", context, "--create-namespace", "--version", ROUTER_CHART_VERSION])
+    commands = [
+        kubectl(context, "apply", "-f", f"https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/{GAIE_VERSION}/v1-manifests.yaml"),
+        router_command,
+        ["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", str(overlay_path.parent)],
+    ]
+    if monitor_path:
+        commands.append(kubectl(context, "apply", "-f", str(monitor_path)))
+    commands.append(kubectl(context, "-n", namespace, "get", "pods", "-l", "llm-d.ai/guide=optimized-baseline"))
     return {
         "context": context,
         "namespace": namespace,
         "release_name": release,
         "overlay_path": str(overlay_path),
         "overlay": overlay,
-        "commands": [
-            kubectl(context, "apply", "-f", f"https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/{GAIE_VERSION}/v1-manifests.yaml"),
-            ["helm", "upgrade", "--install", release, ROUTER_CHART, "-f", str(root / "guides" / "recipes" / "router" / "base.values.yaml"), "-f", str(root / "guides" / "optimized-baseline" / "router" / "optimized-baseline.values.yaml"), "--namespace", namespace, "--kube-context", context, "--create-namespace", "--version", ROUTER_CHART_VERSION],
-            ["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", str(overlay_path.parent)],
-            kubectl(context, "-n", namespace, "get", "pods", "-l", "llm-d.ai/guide=optimized-baseline"),
-        ],
+        "monitoring_path": str(monitor_path) if monitor_path else None,
+        "monitoring_manifest": monitor_manifest,
+        "commands": commands,
     }
 
 
@@ -304,5 +400,7 @@ data:
     if rendered.returncode:
         raise RuntimeError(rendered.stderr.strip() or "Could not render the CPU vLLM overlay.")
     execute(kubectl(context, "-n", namespace, "apply", "-f", "-"), input_text=rendered.stdout)
+    if plan.get("monitoring_path"):
+        execute(plan["commands"][3])
     log_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
     return plan, log_path, "LLM-D router and CPU vLLM overlay submitted. Wait for model pods to become Ready before benchmarking."
