@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="5.0 -5.0 2125.0 1345.0" width="2125" height="1345" role="img" aria-label="Excalidraw diagram preview">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 z" fill="#1f2937"/></marker></defs>
+<rect x="5.0" y="-5.0" width="2125.0" height="1345.0" fill="#ffffff"/>
+<text x="70.0" y="65.0" fill="#0f172a" font-family="Arial, sans-serif" font-size="30" text-anchor="start">Distributed CPU LLM Serving on OKE with LLM-D</text>
+<text x="70.0" y="112.0" fill="#475569" font-family="Arial, sans-serif" font-size="17" text-anchor="start">Lab 3–5: private CPU serving, demand-driven scaling, observability,</text>
+<text x="70.0" y="133.25" fill="#475569" font-family="Arial, sans-serif" font-size="17" text-anchor="start">and explicit external routing</text>
+<rect x="45.0" y="150.0" width="275.0" height="900.0" rx="10" fill="#fff7ed" stroke="#c2410c" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="63.0" y="179.0" fill="#c2410c" font-family="Arial, sans-serif" font-size="17" text-anchor="start">Participant workstation</text>
+<rect x="365.0" y="150.0" width="1035.0" height="900.0" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="383.0" y="179.0" fill="#2563eb" font-family="Arial, sans-serif" font-size="17" text-anchor="start">Oracle Cloud Infrastructure · OKE cluster</text>
+<rect x="1450.0" y="150.0" width="300.0" height="900.0" rx="10" fill="#faf5ff" stroke="#7e22ce" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="1468.0" y="179.0" fill="#7e22ce" font-family="Arial, sans-serif" font-size="17" text-anchor="start">External provider boundary</text>
+<rect x="80.0" y="300.0" width="205.0" height="110.0" rx="10" fill="#ffffff" stroke="#c2410c" stroke-width="2" opacity="1.0"/>
+<text x="52.0" y="350.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">OCI Inference Cloud</text>
+<text x="52.0" y="373.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Lab UI + benchmark client</text>
+<rect x="80.0" y="490.0" width="205.0" height="100.0" rx="10" fill="#ffffff" stroke="#c2410c" stroke-width="2" opacity="1.0"/>
+<text x="78.10000000000001" y="535.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Local-only tunnel</text>
+<text x="78.10000000000001" y="558.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">port-forward + proxy</text>
+<rect x="80.0" y="790.0" width="205.0" height="90.0" rx="10" fill="#ffffff" stroke="#c2410c" stroke-width="2" opacity="1.0"/>
+<text x="88.54" y="830.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Browser</text>
+<text x="88.54" y="853.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Grafana dashboards</text>
+<rect x="1490.0" y="300.0" width="220.0" height="100.0" rx="10" fill="#ffffff" stroke="#7e22ce" stroke-width="2" opacity="1.0"/>
+<text x="1495.6" y="345.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Outbound HTTPS / DNS</text>
+<text x="1495.6" y="368.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">No public ingress</text>
+<rect x="1490.0" y="490.0" width="220.0" height="110.0" rx="10" fill="#ffffff" stroke="#7e22ce" stroke-width="2" opacity="1.0"/>
+<text x="1459.06" y="540.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">OpenRouter hosted API</text>
+<text x="1459.06" y="563.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">explicit coding / reasoning</text>
+<rect x="1490.0" y="710.0" width="220.0" height="90.0" rx="10" fill="#ffffff" stroke="#7e22ce" stroke-width="2" opacity="1.0"/>
+<text x="1511.26" y="750.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">Selected external</text>
+<text x="1511.26" y="773.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">provider model</text>
+<rect x="395.0" y="205.0" width="970.0" height="405.0" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="413.0" y="234.0" fill="#0f766e" font-family="Arial, sans-serif" font-size="17" text-anchor="start">Serving data plane · namespace: llm-d-lab</text>
+<rect x="425.0" y="300.0" width="230.0" height="145.0" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2" opacity="1.0"/>
+<text x="409.5" y="356.75" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">LiteLLM Proxy · Lab 5</text>
+<text x="409.5" y="379.25" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">ClusterIP · 1 replica</text>
+<text x="409.5" y="401.75" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">OpenAI-compatible aliases</text>
+<rect x="750.0" y="285.0" width="265.0" height="165.0" rx="10" fill="#ffffff" stroke="#0369a1" stroke-width="2" opacity="1.0"/>
+<text x="746.78" y="351.75" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">LLM-D Router + EPP · Lab 4</text>
+<text x="746.78" y="374.25" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">queue, flow control,</text>
+<text x="746.78" y="396.75" fill="#1f2937" font-family="Arial, sans-serif" font-size="18" text-anchor="start">KV-cache-aware placement</text>
+<rect x="1055.0" y="245.0" width="280.0" height="335.0" rx="10" fill="#f0f9ff" stroke="#0284c7" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="1073.0" y="274.0" fill="#0284c7" font-family="Arial, sans-serif" font-size="17" text-anchor="start">CPU model-serving replicas</text>
+<rect x="1085.0" y="305.0" width="220.0" height="85.0" rx="10" fill="#ffffff" stroke="#0284c7" stroke-width="2" opacity="1.0"/>
+<text x="1088.28" y="343.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">CPU vLLM pod</text>
+<text x="1088.28" y="363.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">Ready · full model copy</text>
+<rect x="1085.0" y="425.0" width="220.0" height="85.0" rx="10" fill="#ffffff" stroke="#0284c7" stroke-width="2" opacity="1.0"/>
+<text x="1116.12" y="463.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">CPU vLLM pod</text>
+<text x="1116.12" y="483.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">Scale-out replica</text>
+<rect x="1085.0" y="535.0" width="220.0" height="55.0" rx="10" fill="#fefce8" stroke="#ca8a04" stroke-width="2" opacity="1.0"/>
+<text x="1086.25" y="558.75" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Pending pod</text>
+<text x="1086.25" y="577.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">when CPU capacity is full</text>
+<rect x="395.0" y="635.0" width="970.0" height="385.0" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2" opacity="1.0" stroke-dasharray="8 6"/>
+<text x="413.0" y="664.0" fill="#16a34a" font-family="Arial, sans-serif" font-size="17" text-anchor="start">Observability and autoscaling control plane</text>
+<rect x="425.0" y="700.0" width="190.0" height="90.0" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="2" opacity="1.0"/>
+<text x="422.56" y="741.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">ServiceMonitors</text>
+<text x="422.56" y="761.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">EPP + LiteLLM metrics</text>
+<rect x="670.0" y="700.0" width="190.0" height="90.0" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="2" opacity="1.0"/>
+<text x="658.28" y="741.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">Prometheus</text>
+<text x="658.28" y="761.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">metrics store + queries</text>
+<rect x="425.0" y="870.0" width="190.0" height="105.0" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="2" opacity="1.0"/>
+<text x="422.56" y="908.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">Grafana</text>
+<text x="422.56" y="928.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">TTFT · ITL · KV cache</text>
+<text x="422.56" y="948.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">throughput · queue</text>
+<rect x="925.0" y="690.0" width="200.0" height="115.0" rx="10" fill="#ffffff" stroke="#ca8a04" stroke-width="2" opacity="1.0"/>
+<text x="932.2" y="733.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">KEDA ScaledObject</text>
+<text x="932.2" y="753.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">queue size ≥ 1</text>
+<text x="932.2" y="773.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">running requests ≥ 4</text>
+<rect x="1170.0" y="690.0" width="160.0" height="95.0" rx="10" fill="#ffffff" stroke="#ca8a04" stroke-width="2" opacity="1.0"/>
+<text x="1152.56" y="733.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">KEDA-owned HPA</text>
+<text x="1152.56" y="753.5" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">model-server replicas</text>
+<rect x="925.0" y="865.0" width="200.0" height="90.0" rx="10" fill="#ffffff" stroke="#ca8a04" stroke-width="2" opacity="1.0"/>
+<text x="922.92" y="906.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">OKE Cluster Autoscaler</text>
+<text x="922.92" y="926.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">admin-managed</text>
+<rect x="1170.0" y="855.0" width="160.0" height="110.0" rx="10" fill="#ffffff" stroke="#ca8a04" stroke-width="2" opacity="1.0"/>
+<text x="1198.96" y="906.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">Managed CPU</text>
+<text x="1198.96" y="926.0" fill="#1f2937" font-family="Arial, sans-serif" font-size="16" text-anchor="start">node pool</text>
+<polyline points="182.0,410.0 182.0,490.0" fill="none" stroke="#c2410c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="285.0,540.0 350.0,540.0 350.0,372.0 425.0,372.0" fill="none" stroke="#c2410c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="655.0,372.0 750.0,372.0" fill="none" stroke="#0f766e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="655.0,325.0 700.0,325.0 700.0,220.0 1460.0,220.0 1460.0,350.0 1490.0,350.0" fill="none" stroke="#7e22ce" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1600.0,400.0 1600.0,490.0" fill="none" stroke="#7e22ce" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1600.0,600.0 1600.0,710.0" fill="none" stroke="#7e22ce" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1015.0,345.0 1085.0,345.0" fill="none" stroke="#0369a1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1015.0,405.0 1047.0,405.0 1047.0,468.0 1085.0,468.0" fill="none" stroke="#0369a1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1305.0,347.0 1375.0,347.0 1375.0,640.0 520.0,640.0 520.0,700.0" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="540.0,445.0 540.0,700.0" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="615.0,745.0 670.0,745.0" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="765.0,790.0 765.0,830.0 520.0,830.0 520.0,870.0" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="860.0,745.0 925.0,745.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1125.0,745.0 1170.0,745.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1250.0,690.0 1250.0,645.0 1320.0,645.0 1320.0,468.0 1305.0,468.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1085.0,562.0 880.0,562.0 880.0,830.0 1025.0,830.0 1025.0,865.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1125.0,910.0 1170.0,910.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="1250.0,855.0 1348.0,855.0 1348.0,468.0 1305.0,468.0" fill="none" stroke="#ca8a04" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<polyline points="425.0,922.0 350.0,922.0 350.0,835.0 285.0,835.0" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>
+<rect x="450.0" y="1200.0" width="590.0" height="100.0" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="2" opacity="1.0"/>
+<text x="531.85" y="1236.875" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Ownership boundary</text>
+<text x="531.85" y="1255.625" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Lab 5: LiteLLM, Secret, ServiceMonitor, dashboard</text>
+<text x="531.85" y="1274.375" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Lab 4: EPP, CPU vLLM, KEDA policy, platform stack</text>
+<rect x="1090.0" y="1200.0" width="590.0" height="100.0" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="2" opacity="1.0"/>
+<text x="1180.55" y="1236.875" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Control loop</text>
+<text x="1180.55" y="1255.625" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">EPP queue / running requests → KEDA → HPA</text>
+<text x="1180.55" y="1274.375" fill="#1f2937" font-family="Arial, sans-serif" font-size="15" text-anchor="start">Pending CPU pod → OKE Cluster Autoscaler → node</text>
+</svg>

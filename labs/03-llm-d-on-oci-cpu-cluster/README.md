@@ -34,6 +34,18 @@ LLM-D routes to supported model servers such as vLLM. The previous direct `llama
 
 Follow [setup.md](setup.md) before deploying.
 
+## OCI Inference Cloud Experiment Type
+
+In the app, create:
+
+```text
+Lab 3 · LLM-D on existing CPU cluster
+```
+
+Use this experiment type when you already have a CPU Kubernetes cluster and want to deploy the LLM-D EPP router plus a CPU vLLM model-server pool. The app does not create or delete the cluster. It only validates the selected kubeconfig context, renders a reviewable overlay from a pinned LLM-D checkout, applies the lab-owned namespace resources after confirmation, and keeps overlays, logs, endpoint state, and benchmark JSON outside Git.
+
+Choose Lab 4 instead when the question is autoscaling and observability. Choose Lab 5 only after a Lab 4 experiment is ready and the question is local-versus-external model routing.
+
 ## Optional: Provision an OKE Cluster for This Lab
 
 This lab deliberately deploys to an *existing* cluster. If you need a dedicated environment, provision an Oracle Kubernetes Engine (OKE) cluster first, then return to the lab workflow. The workbench will not create or delete that cluster for you.

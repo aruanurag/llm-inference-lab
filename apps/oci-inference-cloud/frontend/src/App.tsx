@@ -10,15 +10,16 @@ import {
   YAxis
 } from "recharts";
 import { api } from "./api";
+import { RoutingLab } from "./RoutingLab";
 import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDAutoscalingObservation, LlmDAutoscalingPlan, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDGrafanaStatus, LlmDPlan, LlmDPlatformPlan, LlmDPlatformPreflight, LlmDPlatformStatus, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 type Status = { kind: "idle" | "loading" | "error" | "ok"; message: string };
 type ActiveAction = "idle" | "load" | "provision" | "deploy" | "benchmark" | "endpoint" | "llmd" | "platform" | "autoscaling";
-type View = "setup" | "benchmarks" | "hackathon" | "llmd";
+type View = "setup" | "benchmarks" | "hackathon" | "llmd" | "routing";
 type BenchmarkPreset = {
   id: string;
   name: string;
-  focus: "latency" | "prefill" | "decode" | "throughput" | "concurrency";
+  focus: "latency" | "prefill" | "decode" | "throughput" | "concurrency" | "cache";
   primaryMetric: string;
   description: string;
   concurrency: number;
@@ -82,6 +83,71 @@ const BENCHMARK_PRESETS: BenchmarkPreset[] = [
     comparisonGroup: "prefill-pressure",
   },
   {
+    id: "ttft-shape-comparison",
+    name: "TTFT shape comparison",
+    focus: "prefill",
+    primaryMetric: "TTFT p95",
+    description: "Twenty-four distinct long prompts, sent one at a time. Use this matched run after a warm-up to compare CPU-shape prefill and TTFT without deliberately repeating prompts.",
+    concurrency: 1,
+    requests: 24,
+    maxTokens: 128,
+    benchmarkName: "ttft-shape-comparison",
+    promptHint: "TTFT shape comparison · 24 unique long prompts",
+    comparisonGroup: "ttft-shape-comparison",
+  },
+  {
+    id: "ttft-length-sweep-short",
+    name: "TTFT length sweep · short unique",
+    focus: "prefill",
+    primaryMetric: "TTFT p95",
+    description: "First point of the controlled input-length sweep. It uses 24 distinct short prompts so the result is not dominated by repeated prompt reuse.",
+    concurrency: 1,
+    requests: 24,
+    maxTokens: 128,
+    benchmarkName: "ttft-length-sweep-short",
+    promptHint: "TTFT length sweep · short unique prompts",
+    comparisonGroup: "ttft-length-sweep",
+  },
+  {
+    id: "ttft-length-sweep-medium",
+    name: "TTFT length sweep · medium unique",
+    focus: "prefill",
+    primaryMetric: "TTFT p95",
+    description: "Middle point of the controlled input-length sweep. Run it with the short and long unique-prompt presets, unchanged except for input size.",
+    concurrency: 1,
+    requests: 24,
+    maxTokens: 128,
+    benchmarkName: "ttft-length-sweep-medium",
+    promptHint: "TTFT length sweep · medium unique prompts",
+    comparisonGroup: "ttft-length-sweep",
+  },
+  {
+    id: "ttft-length-sweep-long",
+    name: "TTFT length sweep · long unique",
+    focus: "prefill",
+    primaryMetric: "TTFT p95",
+    description: "Final point of the controlled input-length sweep. It uses 24 distinct long prompts, roughly 1,500 input tokens by the lab's planning estimate.",
+    concurrency: 1,
+    requests: 24,
+    maxTokens: 128,
+    benchmarkName: "ttft-length-sweep-long",
+    promptHint: "TTFT length sweep · long unique prompts",
+    comparisonGroup: "ttft-length-sweep",
+  },
+  {
+    id: "shared-prefix-reuse-diagnostic",
+    name: "Shared-prefix reuse diagnostic",
+    focus: "cache",
+    primaryMetric: "TTFT p95 and first-to-last request trend",
+    description: "An intentionally shared-prefix workload. Use it only after the unique-prompt baseline to observe cache or reuse sensitivity, not as the primary CPU-shape prefill result.",
+    concurrency: 1,
+    requests: 24,
+    maxTokens: 128,
+    benchmarkName: "shared-prefix-reuse",
+    promptHint: "TTFT shared-prefix reuse diagnostic · 24 prompts",
+    comparisonGroup: "shared-prefix-reuse",
+  },
+  {
     id: "decode",
     name: "Long decode throughput",
     focus: "decode",
@@ -106,6 +172,19 @@ const BENCHMARK_PRESETS: BenchmarkPreset[] = [
     benchmarkName: "throughput-concurrency-4",
     promptHint: "Concurrency mixed workload",
     comparisonGroup: "concurrency-scaling",
+  },
+  {
+    id: "sustained-load",
+    name: "Sustained load · 64 requests",
+    focus: "concurrency",
+    primaryMetric: "Requests/sec, output tok/s, TTFT p95, and latency p95",
+    description: "Longer fixed-concurrency run for a steadier capacity comparison. Keep all 64 requests successful before interpreting throughput.",
+    concurrency: 8,
+    requests: 64,
+    maxTokens: 256,
+    benchmarkName: "sustained-load",
+    promptHint: "Throughput comparison prompts",
+    comparisonGroup: "sustained-load",
   },
 ];
 
@@ -240,6 +319,11 @@ function filterShapesForFamily(options: Option[], family: ShapeFamily) {
   return options;
 }
 
+const CPU_COMPARISON_FALLBACK_SHAPES: Option[] = [
+  { id: "VM.Standard.E6.Flex", name: "VM.Standard.E6.Flex", extra: { llm_inference_shape_class: "cpu", llm_inference_fallback: true } },
+  { id: "VM.Standard.E6.Ax.Flex", name: "VM.Standard.E6.Ax.Flex", extra: { llm_inference_shape_class: "cpu", llm_inference_fallback: true } },
+];
+
 function laneLabel(value?: string | null) {
   if (value === "baseline-cpu") return "Primary run";
   if (value === "oci-accelerator") return "Comparison run";
@@ -290,6 +374,10 @@ export function App() {
   const [availabilityDomain, setAvailabilityDomain] = useState("");
   const [shapeFamily, setShapeFamily] = useState<ShapeFamily>("cpu");
   const [shape, setShape] = useState("");
+  // A comparison experiment deliberately keeps the engine and model shared,
+  // while allowing only the OCI shape to differ between the two instances.
+  const [comparisonPrimaryShape, setComparisonPrimaryShape] = useState("");
+  const [comparisonCandidateShape, setComparisonCandidateShape] = useState("");
   const [vcnId, setVcnId] = useState("");
   const [subnetId, setSubnetId] = useState("");
   const [imageId, setImageId] = useState("");
@@ -300,6 +388,7 @@ export function App() {
   const [ocpus, setOcpus] = useState("");
   const [memoryGbs, setMemoryGbs] = useState("");
   const [selectedInstanceId, setSelectedInstanceId] = useState("");
+  const [selectedInferenceEngine, setSelectedInferenceEngine] = useState<"llama_cpp" | "vllm_cpu">("llama_cpp");
   const [selectedDeployModelId, setSelectedDeployModelId] = useState("qwen2.5-1.5b-q4_k_m");
   const [customModelName, setCustomModelName] = useState("");
   const [customModelUrl, setCustomModelUrl] = useState("");
@@ -310,6 +399,7 @@ export function App() {
   const [deployParallel, setDeployParallel] = useState(4);
   const [deployBatchSize, setDeployBatchSize] = useState(512);
   const [deployUbatchSize, setDeployUbatchSize] = useState(128);
+  const [deployCpuKvCacheGib, setDeployCpuKvCacheGib] = useState(8);
   const [selectedPromptSetId, setSelectedPromptSetId] = useState("");
   const [benchmarkName, setBenchmarkName] = useState("throughput-comparison-primary");
   const [experimentLane, setExperimentLane] = useState("primary");
@@ -317,11 +407,14 @@ export function App() {
   const [requests, setRequests] = useState(4);
   const [maxTokens, setMaxTokens] = useState(128);
   const [selectedPresetId, setSelectedPresetId] = useState("throughput-comparison");
+  const [benchmarkTool, setBenchmarkTool] = useState("http_streaming");
+  const [disablePromptCache, setDisablePromptCache] = useState(false);
   const [view, setView] = useState<View>("setup");
   const [experimentName, setExperimentName] = useState(`Inference throughput research ${new Date().toLocaleDateString()}`);
   const [experimentDescription, setExperimentDescription] = useState("Compare models, shapes, and deploy settings using repeatable benchmark presets.");
   const [selectedExperimentId, setSelectedExperimentId] = useState("");
   const [experimentKind, setExperimentKind] = useState("cpu-instance");
+  const [sourceExperimentId, setSourceExperimentId] = useState("");
   const [kubeContext, setKubeContext] = useState("");
   const [llmdNamespace, setLlmdNamespace] = useState("llm-d-lab");
   const [llmdRepoPath, setLlmdRepoPath] = useState("~/.llm-inference-cloud/llm-d/source");
@@ -365,10 +458,23 @@ export function App() {
     () => experiments.find((item) => String(item.id) === selectedExperimentId),
     [experiments, selectedExperimentId]
   );
+  const lab4Experiments = useMemo(
+    () => experiments.filter((item) => item.kind === "llm-d-autoscaling"),
+    [experiments],
+  );
   const experimentInstances = useMemo(
     () => selectedExperimentId ? instances.filter((item) => String(item.experiment_id || "") === selectedExperimentId) : instances,
     [instances, selectedExperimentId]
   );
+
+  function comparisonShapeOptions(options: Option[]) {
+    if (!isCpuComparisonExperiment || options.length) return options;
+    // OCI's shape-list API occasionally returns no records for an otherwise
+    // usable tenancy. Keep this lab actionable with the two standard CPU Flex
+    // shapes used by the comparison workflow; OCI remains the source of truth
+    // and validates shape availability when the instances are created.
+    return CPU_COMPARISON_FALLBACK_SHAPES;
+  }
   const experimentBenchmarks = useMemo(
     () => selectedExperimentId ? benchmarks.filter((item) => String(item.summary.experiment_id || "") === selectedExperimentId || experimentInstances.some((instance) => instance.id === item.instance_id)) : benchmarks,
     [benchmarks, experimentInstances, selectedExperimentId]
@@ -402,10 +508,17 @@ export function App() {
     [experimentLane]
   );
   const selectedShapeClass = shapeClass(selectedInstance?.shape || shape);
+  const selectedInstanceEngine = selectedInstance?.inference_engine || selectedInferenceEngine;
+  const nativeBenchmarkTool = selectedInstanceEngine === "vllm_cpu" ? "vllm_bench_serve" : "llama_bench";
+  const supportsPromptCacheControl = benchmarkTool === "http_streaming" && selectedInstanceEngine === "llama_cpp";
   const isBusy = activeAction !== "idle";
   const hasOciContext = Boolean(compartmentId && availabilityDomains.length && vcns.length);
   const hasExperiment = Boolean(activeExperiment);
+  const isCpuComparisonExperiment = activeExperiment?.kind === "cpu-shape-comparison";
+  const comparisonUsesUnverifiedShapes = isCpuComparisonExperiment && shapes.some((item) => item.extra?.llm_inference_fallback === true);
   const hasProvisionedInstance = experimentInstances.length > 0;
+  const hasComparisonPair = !isCpuComparisonExperiment || experimentInstances.length >= 2;
+  const comparisonInstancesReady = !isCpuComparisonExperiment || experimentInstances.filter((item) => item.lifecycle_state === "RUNNING" && (item.public_ip || item.private_ip)).length >= 2;
   const selectedInstanceReady = Boolean(selectedInstance && selectedInstance.lifecycle_state === "RUNNING" && (selectedInstance.public_ip || selectedInstance.private_ip));
   const hasDeployed = Boolean(
     activeExperiment?.status === "deployed" ||
@@ -416,6 +529,7 @@ export function App() {
   const endpointRunning = endpointStatus?.status === "running" && endpointStatus?.healthy;
   const endpointUrl = endpointStatus?.proxy_url || (activeExperiment ? `http://127.0.0.1:8090/api/experiments/${activeExperiment.id}/endpoint/v1` : "");
   const endpointAnalytics = endpointStatus?.analytics || {};
+  const isLab5Experiment = activeExperiment?.kind === "llm-d-routing";
   const isLlmDExperiment = activeExperiment?.kind === "llm-d-cluster" || activeExperiment?.kind === "llm-d-autoscaling";
   const isLab4Experiment = activeExperiment?.kind === "llm-d-autoscaling";
   const llmdDeployed = activeExperiment?.status === "llm-d-deployed" || activeExperiment?.status === "llm-d-benchmarked" || activeExperiment?.status === "lab4-autoscaling-ready";
@@ -438,14 +552,16 @@ export function App() {
       state: activeAction === "load" ? "active" : hasOciContext ? "done" : hasExperiment ? "ready" : "todo"
     },
     {
-      title: "Provision",
-      detail: hasProvisionedInstance ? `${experimentInstances[0].display_name} · ${experimentInstances[0].lifecycle_state || "unknown"}` : "Create experiment instance",
-      state: activeAction === "provision" ? "active" : hasProvisionedInstance ? "done" : hasOciContext ? "ready" : "todo"
+      title: isCpuComparisonExperiment ? "Provision pair" : "Provision",
+      detail: isCpuComparisonExperiment
+        ? (hasComparisonPair ? `${experimentInstances.length}/2 comparison instances recorded` : "Create the baseline and candidate instances")
+        : (hasProvisionedInstance ? `${experimentInstances[0].display_name} · ${experimentInstances[0].lifecycle_state || "unknown"}` : "Create experiment instance"),
+      state: activeAction === "provision" ? "active" : (isCpuComparisonExperiment ? hasComparisonPair : hasProvisionedInstance) ? "done" : hasOciContext ? "ready" : "todo"
     },
     {
       title: "Deploy",
-      detail: hasDeployed ? "llama-server deployed" : selectedInstanceReady ? "Instance ready for SSH deploy" : "Wait for RUNNING instance with IP",
-      state: activeAction === "deploy" ? "active" : hasDeployed ? "done" : selectedInstanceReady ? "ready" : "todo"
+      detail: hasDeployed ? (isCpuComparisonExperiment ? "Shared llama.cpp configuration deployed" : "llama-server deployed") : selectedInstanceReady ? "Instance ready for SSH deploy" : "Wait for RUNNING instance with IP",
+      state: activeAction === "deploy" ? "active" : hasDeployed ? "done" : (isCpuComparisonExperiment ? comparisonInstancesReady : selectedInstanceReady) ? "ready" : "todo"
     },
     {
       title: "Benchmark",
@@ -492,6 +608,14 @@ export function App() {
     { title: "KEDA policy", detail: lab4AutoscalingReady ? "Demand policy owns the HPA" : "Apply EPP queue and running-request policy", state: lab4AutoscalingReady ? "done" : activeAction === "autoscaling" ? "active" : llmdDeployed ? "ready" : "todo" },
     { title: "Observe", detail: lab4Observation ? "Latest observation captured" : "Generate traffic and inspect pod/node scaling", state: lab4Observation ? "done" : lab4AutoscalingReady ? "ready" : "todo" },
   ];
+  const lab5WorkflowSteps = [
+    { title: "Link Lab 4", detail: activeExperiment?.source_experiment_id ? `Source experiment #${activeExperiment.source_experiment_id}` : "Select a ready Lab 4 source", state: activeExperiment?.source_experiment_id ? "done" : "ready" },
+    { title: "Validate", detail: "Check EPP, Prometheus, and ServiceMonitor prerequisites", state: "ready" },
+    { title: "Plan", detail: "Review private router, metrics, and dashboard resources", state: "ready" },
+    { title: "Deploy", detail: "Create the Lab 5-owned LiteLLM router", state: activeExperiment?.status === "lab5-routing-ready" || activeExperiment?.status === "lab5-routing-benchmarked" ? "done" : "ready" },
+    { title: "Endpoint", detail: "Start local-only OpenAI-compatible endpoint", state: "ready" },
+    { title: "Compare", detail: "Benchmark explicit private and external aliases", state: activeExperiment?.status === "lab5-routing-benchmarked" ? "done" : "ready" },
+  ];
 
   async function loadInitial() {
     setActiveAction("load");
@@ -504,7 +628,7 @@ export function App() {
         api.instances(),
         api.prompts(),
         api.benchmarks(),
-        api.deployModels()
+        api.deployModels("llama_cpp")
       ]);
       setProfiles(profileList);
       setExperiments(experimentList);
@@ -543,13 +667,22 @@ export function App() {
     setActiveAction("load");
     setStatus({ kind: "loading", message: "Creating experiment." });
     try {
-      const experiment = await api.createExperiment({ name: experimentName, description: experimentDescription, kind: experimentKind });
+      if (experimentKind === "llm-d-routing" && !sourceExperimentId) {
+        throw new Error("Select the ready Lab 4 autoscaling experiment that this Lab 5 router will use as its source.");
+      }
+      const experiment = await api.createExperiment({
+        name: experimentName,
+        description: experimentDescription,
+        kind: experimentKind,
+        source_experiment_id: experimentKind === "llm-d-routing" ? Number(sourceExperimentId) : undefined,
+      });
       const experimentList = await api.experiments();
       setExperiments(experimentList);
       setSelectedExperimentId(String(experiment.id));
       const isClusterLab = experiment.kind === "llm-d-cluster" || experiment.kind === "llm-d-autoscaling";
-      setView(isClusterLab ? "llmd" : "setup");
-      setStatus({ kind: "ok", message: isClusterLab ? `Experiment created: ${experiment.name}. Connect the existing cluster.` : `Experiment created: ${experiment.name}. Continue with OCI setup.` });
+      const isRoutingLab = experiment.kind === "llm-d-routing";
+      setView(isRoutingLab ? "routing" : isClusterLab ? "llmd" : "setup");
+      setStatus({ kind: "ok", message: isRoutingLab ? `Experiment created: ${experiment.name}. Validate its linked Lab 4 source.` : isClusterLab ? `Experiment created: ${experiment.name}. Connect the existing cluster.` : `Experiment created: ${experiment.name}. Continue with OCI setup.` });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
       await loadLlmDBenchmarks();
@@ -598,7 +731,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // Retain the user-selected end-to-end test, but keep a native method tied
+    // to the engine recorded on an existing instance after a refresh.
+    if (benchmarkTool !== "http_streaming" && selectedInstance?.inference_engine) {
+      setBenchmarkTool(selectedInstance.inference_engine === "vllm_cpu" ? "vllm_bench_serve" : "llama_bench");
+    }
+  }, [selectedInstance?.id, selectedInstance?.inference_engine]);
+
+  useEffect(() => {
     if (!activeExperiment) return;
+    if (activeExperiment.kind === "llm-d-routing") {
+      setView("routing");
+      return;
+    }
     if (activeExperiment.kind === "llm-d-cluster" || activeExperiment.kind === "llm-d-autoscaling") {
       setView("llmd");
       return;
@@ -612,6 +757,11 @@ export function App() {
 
   useEffect(() => {
     if (!activeExperiment) {
+      setEndpointStatus(null);
+      setLlmdEndpointStatus(null);
+      return;
+    }
+    if (activeExperiment.kind === "llm-d-routing") {
       setEndpointStatus(null);
       setLlmdEndpointStatus(null);
       return;
@@ -676,6 +826,16 @@ export function App() {
     setStatus({ kind: "ok", message: `${label} copied.` });
   }
 
+  async function loadCompatibleShapes(compartment: string, ad: string, includeGpuShapes: boolean) {
+    const availabilityFiltered = await api.shapes(compartment, ad || undefined, includeGpuShapes);
+    // Some tenancies return an empty result when an AD filter is supplied even
+    // though the same compartment has available shapes. The unfiltered list is
+    // still scoped to the selected compartment, and lets the user select the
+    // CPU shape before OCI validates its final availability at provisioning.
+    if (availabilityFiltered.length || !ad) return availabilityFiltered;
+    return api.shapes(compartment, undefined, includeGpuShapes);
+  }
+
   async function applyContext() {
     setActiveAction("load");
     setStatus({ kind: "loading", message: "Applying OCI context and loading infrastructure." });
@@ -689,11 +849,46 @@ export function App() {
         api.availabilityDomains(),
         api.vcns(activeCompartment)
       ]);
+      const nextAvailabilityDomain = adList[0]?.id || "";
+      // Load the complete first usable infrastructure selection in one pass.
+      // Previously the UI loaded only compartments/VCNs here, leaving the
+      // shape selectors empty until the user reselected the same compartment.
+      const requestedFamily: ShapeFamily = isCpuComparisonExperiment ? "cpu" : shapeFamily;
+      const rawShapeList = activeCompartment
+        ? await loadCompatibleShapes(activeCompartment, nextAvailabilityDomain, requestedFamily !== "cpu")
+        : [];
+      const listedShapes = filterShapesForFamily(rawShapeList, requestedFamily);
+      const shapeList = comparisonShapeOptions(listedShapes);
+      const nextShape = shapeList[0]?.id || "";
+      const nextVpc = vcnList[0]?.id || "";
+      const [subnetList, imageList] = await Promise.all([
+        nextVpc ? api.subnets(activeCompartment, nextVpc) : Promise.resolve([]),
+        nextShape ? api.images(activeCompartment, nextShape) : Promise.resolve([]),
+      ]);
       setAvailabilityDomains(adList);
       setVcns(vcnList);
-      setAvailabilityDomain(adList[0]?.id || "");
+      setAvailabilityDomain(nextAvailabilityDomain);
       setVpcDefaults(vcnList);
-      setStatus({ kind: "ok", message: "OCI context loaded." });
+      setShapes(shapeList);
+      setShape(nextShape);
+      setComparisonPrimaryShape(nextShape);
+      setComparisonCandidateShape(shapeList[1]?.id || nextShape);
+      if (isCpuComparisonExperiment) setShapeFamily("cpu");
+      if (nextShape.includes(".Flex") && (!ocpus || !memoryGbs)) {
+        const defaults = flexDefaults(shapeList.find((item) => item.id === nextShape));
+        if (!ocpus) setOcpus(defaults.ocpus);
+        if (!memoryGbs) setMemoryGbs(defaults.memoryGbs);
+      }
+      setSubnets(subnetList);
+      setSubnetId(subnetList[0]?.id || "");
+      setImages(imageList);
+      setImageId(imageList[0]?.id || "");
+      setStatus({
+        kind: "ok",
+        message: listedShapes.length === 0 && isCpuComparisonExperiment
+          ? "OCI returned no enumerated CPU shapes. Showing the standard E6 Flex comparison pair; OCI will validate availability when you provision."
+          : `OCI context loaded. ${shapeList.length} compatible ${requestedFamily === "cpu" ? "CPU" : ""} shapes are ready to select.`
+      });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -722,17 +917,20 @@ export function App() {
     setStatus({ kind: "loading", message: "Loading VCNs and shapes for selected compartment." });
     try {
       await api.context({ profile, region, compartment_id: nextCompartmentId });
+      const requestedFamily: ShapeFamily = isCpuComparisonExperiment ? "cpu" : shapeFamily;
       const [vcnList, rawShapeList] = await Promise.all([
         api.vcns(nextCompartmentId),
-        api.shapes(nextCompartmentId, availabilityDomain, shapeFamily !== "cpu")
+        loadCompatibleShapes(nextCompartmentId, availabilityDomain, requestedFamily !== "cpu")
       ]);
-      const shapeList = filterShapesForFamily(rawShapeList, shapeFamily);
+      const shapeList = comparisonShapeOptions(filterShapesForFamily(rawShapeList, requestedFamily));
       const nextVpc = vcnList[0]?.id || "";
       const nextShape = shapeList[0]?.id || "";
       setVcns(vcnList);
       setVcnId(nextVpc);
       setShapes(shapeList);
       setShape(nextShape);
+      setComparisonPrimaryShape(nextShape);
+      setComparisonCandidateShape(shapeList[1]?.id || nextShape);
       if (nextShape.includes(".Flex") && (!ocpus || !memoryGbs)) {
         const defaults = flexDefaults(shapeList.find((item) => item.id === nextShape));
         if (!ocpus) setOcpus(defaults.ocpus);
@@ -755,6 +953,49 @@ export function App() {
     }
   }
 
+  async function changeAvailabilityDomain(nextAvailabilityDomain: string) {
+    setAvailabilityDomain(nextAvailabilityDomain);
+    setShapes([]);
+    setShape("");
+    setComparisonPrimaryShape("");
+    setComparisonCandidateShape("");
+    setImages([]);
+    setImageId("");
+    if (!compartmentId) return;
+
+    setActiveAction("load");
+    setStatus({ kind: "loading", message: "Checking CPU shape availability in the selected availability domain." });
+    try {
+      const requestedFamily: ShapeFamily = isCpuComparisonExperiment ? "cpu" : shapeFamily;
+      const rawShapeList = await loadCompatibleShapes(compartmentId, nextAvailabilityDomain, requestedFamily !== "cpu");
+      const listedShapes = filterShapesForFamily(rawShapeList, requestedFamily);
+      const shapeList = comparisonShapeOptions(listedShapes);
+      const nextShape = shapeList[0]?.id || "";
+      setShapes(shapeList);
+      setShape(nextShape);
+      setComparisonPrimaryShape(nextShape);
+      setComparisonCandidateShape(shapeList[1]?.id || nextShape);
+      if (nextShape.includes(".Flex") && (!ocpus || !memoryGbs)) {
+        const defaults = flexDefaults(shapeList.find((item) => item.id === nextShape));
+        if (!ocpus) setOcpus(defaults.ocpus);
+        if (!memoryGbs) setMemoryGbs(defaults.memoryGbs);
+      }
+      const imageList = nextShape ? await api.images(compartmentId, nextShape) : [];
+      setImages(imageList);
+      setImageId(imageList[0]?.id || "");
+      setStatus({
+        kind: listedShapes.length ? "ok" : "error",
+        message: listedShapes.length
+          ? `${listedShapes.length} compatible shape${listedShapes.length === 1 ? "" : "s"} loaded for the selected availability domain.`
+          : "OCI did not report compatible CPU shapes for this availability domain. The comparison pair is shown only as an unverified reference and cannot be provisioned. Choose another domain or compartment."
+      });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
   async function changeShapeFamily(nextFamily: ShapeFamily) {
     setShapeFamily(nextFamily);
     setShapes([]);
@@ -766,11 +1007,13 @@ export function App() {
     setActiveAction("load");
     setStatus({ kind: "loading", message: `Loading ${nextFamily === "gpu" ? "GPU" : nextFamily === "cpu" ? "CPU/HPC" : "all"} shapes.` });
     try {
-      const rawShapeList = await api.shapes(compartmentId, availabilityDomain, nextFamily !== "cpu");
-      const shapeList = filterShapesForFamily(rawShapeList, nextFamily);
+      const rawShapeList = await loadCompatibleShapes(compartmentId, availabilityDomain, nextFamily !== "cpu");
+      const shapeList = comparisonShapeOptions(filterShapesForFamily(rawShapeList, nextFamily));
       const nextShape = shapeList[0]?.id || "";
       setShapes(shapeList);
       setShape(nextShape);
+      setComparisonPrimaryShape(nextShape);
+      setComparisonCandidateShape(shapeList[1]?.id || nextShape);
       if (nextShape.includes(".Flex")) {
         const defaults = flexDefaults(shapeList.find((item) => item.id === nextShape));
         setOcpus(defaults.ocpus);
@@ -838,15 +1081,22 @@ export function App() {
     setActiveAction("load");
     setStatus({ kind: "loading", message: "Refreshing shapes, subnets, and images." });
     try {
+      const requestedFamily: ShapeFamily = isCpuComparisonExperiment ? "cpu" : shapeFamily;
       const [rawShapeList, subnetList] = await Promise.all([
-        api.shapes(compartmentId, availabilityDomain, shapeFamily !== "cpu"),
+        loadCompatibleShapes(compartmentId, availabilityDomain, requestedFamily !== "cpu"),
         vcnId ? api.subnets(compartmentId, vcnId) : Promise.resolve([])
       ]);
-      const shapeList = filterShapesForFamily(rawShapeList, shapeFamily);
+      const shapeList = comparisonShapeOptions(filterShapesForFamily(rawShapeList, requestedFamily));
       setShapes(shapeList);
       setSubnets(subnetList);
       const nextShape = shape || shapeList[0]?.id || "";
       setShape(nextShape);
+      if (isCpuComparisonExperiment) {
+        const primaryShape = comparisonPrimaryShape || nextShape;
+        const candidateShape = comparisonCandidateShape || shapeList.find((item) => item.id !== primaryShape)?.id || primaryShape;
+        setComparisonPrimaryShape(primaryShape);
+        setComparisonCandidateShape(candidateShape);
+      }
       setSubnetId(subnetId || subnetList[0]?.id || "");
       if (nextShape.includes(".Flex") && (!ocpus || !memoryGbs)) {
         const defaults = flexDefaults(shapeList.find((item) => item.id === nextShape));
@@ -882,7 +1132,75 @@ export function App() {
     }
   }
 
+  function comparisonInstancePayload(nextShape: string, suffix: string, nextOcpus: string, nextMemoryGbs: string): Record<string, unknown> {
+    const payload: Record<string, unknown> = {
+      experiment_id: activeExperiment?.id,
+      display_name: `${displayName}-${suffix}`,
+      compartment_id: compartmentId,
+      availability_domain: availabilityDomain,
+      shape: nextShape,
+      subnet_id: subnetId,
+      image_id: imageId,
+      ssh_key_id: Number(sshKeyId),
+      ssh_user: sshUser,
+      assign_public_ip: true,
+      boot_volume_size_gbs: 100,
+    };
+    if (nextShape.includes(".Flex")) {
+      payload.ocpus = Number(nextOcpus);
+      payload.memory_gbs = Number(nextMemoryGbs);
+    }
+    return payload;
+  }
+
+  async function createComparisonInstances() {
+    if (!activeExperiment) return;
+    if (comparisonUsesUnverifiedShapes) {
+      setStatus({
+        kind: "error",
+        message: "OCI did not return these CPU shapes as available for the selected compartment and availability domain. Provisioning is blocked to avoid another rejected launch. Change the availability domain or compartment, then reload OCI until verified shapes are listed."
+      });
+      return;
+    }
+    const needsFlexSettings = comparisonPrimaryShape.includes(".Flex") || comparisonCandidateShape.includes(".Flex");
+    const missing = [
+      ["compartment", compartmentId], ["availability domain", availabilityDomain], ["baseline shape", comparisonPrimaryShape],
+      ["candidate shape", comparisonCandidateShape], ["subnet", subnetId], ["image", imageId], ["SSH key", sshKeyId], ["instance name", displayName],
+      ...(needsFlexSettings ? [["OCPUs", ocpus], ["Memory GB", memoryGbs]] : []),
+    ].filter(([, value]) => !String(value || "").trim()).map(([label]) => label);
+    if (comparisonPrimaryShape === comparisonCandidateShape) missing.push("two different CPU shapes");
+    if (missing.length) {
+      setStatus({ kind: "error", message: `Select ${missing.join(", ")} before provisioning the comparison pair.` });
+      return;
+    }
+
+    setActiveAction("provision");
+    setStatus({ kind: "loading", message: "Provisioning baseline instance (1 of 2)." });
+    try {
+      const created = [];
+      created.push(await api.createInstance(comparisonInstancePayload(comparisonPrimaryShape, "baseline", ocpus, memoryGbs)));
+      setStatus({ kind: "loading", message: "Provisioning candidate instance (2 of 2)." });
+      created.push(await api.createInstance(comparisonInstancePayload(comparisonCandidateShape, "candidate", ocpus, memoryGbs)));
+      const instanceList = await api.instances();
+      setInstances(instanceList);
+      setSelectedInstanceId(String(created[0].id));
+      setStatus({ kind: "ok", message: `Provisioned a matched comparison pair: ${comparisonPrimaryShape} and ${comparisonCandidateShape}. Wait for both to become RUNNING before deploying.` });
+    } catch (error) {
+      // A successfully created first instance is intentionally preserved. It is
+      // visible in the table and can be terminated with the experiment's owned
+      // infrastructure if the second launch must be retried later.
+      setInstances(await api.instances());
+      setStatus({ kind: "error", message: error instanceof Error ? `${error.message} Any instance already created remains visible below.` : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
   async function createInstance() {
+    if (isCpuComparisonExperiment) {
+      await createComparisonInstances();
+      return;
+    }
     let nextOcpus = ocpus;
     let nextMemoryGbs = memoryGbs;
     if (shape.includes(".Flex") && (!nextOcpus || !nextMemoryGbs)) {
@@ -945,9 +1263,10 @@ export function App() {
     const instanceId = Number(selectedInstanceId || selectedInstance?.id);
     if (!instanceId) return;
     setActiveAction("deploy");
-    setStatus({ kind: "loading", message: `Deploying llama.cpp over SSH with ${selectedDeployModel?.name || selectedDeployModelId}. This can take several minutes.` });
+    setStatus({ kind: "loading", message: `Deploying ${selectedInferenceEngine === "vllm_cpu" ? "CPU vLLM" : "llama.cpp"} over SSH with ${selectedDeployModel?.name || selectedDeployModelId}. This can take several minutes.` });
     try {
       const result = await api.deploy(instanceId, {
+        engine: selectedInferenceEngine,
         model_id: selectedDeployModelId,
         custom_model_name: customModelName || null,
         custom_model_url: customModelUrl || null,
@@ -957,6 +1276,7 @@ export function App() {
         parallel: deployParallel,
         batch_size: deployBatchSize,
         ubatch_size: deployUbatchSize,
+        cpu_kv_cache_gib: deployCpuKvCacheGib,
       });
       if (result.status === "ok") {
         setDeployedInstanceIds((current) => Array.from(new Set([...current, instanceId])));
@@ -975,12 +1295,76 @@ export function App() {
     }
   }
 
+  function deployPayload() {
+    return {
+      engine: selectedInferenceEngine,
+      model_id: selectedDeployModelId,
+      custom_model_name: customModelName || null,
+      custom_model_url: customModelUrl || null,
+      build_native: buildNative,
+      disable_vnni: disableVnni,
+      ctx_size: deployCtxSize,
+      parallel: deployParallel,
+      batch_size: deployBatchSize,
+      ubatch_size: deployUbatchSize,
+      cpu_kv_cache_gib: deployCpuKvCacheGib,
+    };
+  }
+
+  async function deployComparisonInstances() {
+    const targets = experimentInstances.filter((item) => item.lifecycle_state === "RUNNING" && (item.public_ip || item.private_ip));
+    if (targets.length < 2) {
+      setStatus({ kind: "error", message: "Wait for both comparison instances to be RUNNING with an IP before deploying." });
+      return;
+    }
+    setActiveAction("deploy");
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const instance = targets[index];
+        setStatus({ kind: "loading", message: `Deploying the identical ${selectedInferenceEngine === "vllm_cpu" ? "CPU vLLM" : "llama.cpp"} configuration to ${instance.shape} (${index + 1} of ${targets.length}).` });
+        const result = await api.deploy(instance.id, deployPayload());
+        if (result.status !== "ok") throw new Error(`${instance.shape}: ${result.message}`);
+      }
+      setDeployedInstanceIds((current) => Array.from(new Set([...current, ...targets.map((item) => item.id)])));
+      const [experimentList, instanceList] = await Promise.all([api.experiments(), api.instances()]);
+      setExperiments(experimentList);
+      setInstances(instanceList);
+      setView("benchmarks");
+      setStatus({ kind: "ok", message: `Identical ${selectedInferenceEngine === "vllm_cpu" ? "CPU vLLM" : "llama.cpp"} and model settings are deployed to both comparison shapes. Choose a guided workload, then run it on both.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
   function changeDeployModel(nextModelId: string) {
     setSelectedDeployModelId(nextModelId);
     const model = deployModels.find((item) => item.id === nextModelId);
     if (model) {
       if (!ocpus || Number(ocpus) < model.recommended_ocpus) setOcpus(String(model.recommended_ocpus));
       if (!memoryGbs || Number(memoryGbs) < model.recommended_memory_gbs) setMemoryGbs(String(model.recommended_memory_gbs));
+    }
+  }
+
+  async function changeInferenceEngine(nextEngine: "llama_cpp" | "vllm_cpu") {
+    setSelectedInferenceEngine(nextEngine);
+    setStatus({ kind: "loading", message: `Loading ${nextEngine === "vllm_cpu" ? "CPU vLLM" : "llama.cpp"} model choices.` });
+    try {
+      const models = await api.deployModels(nextEngine);
+      setDeployModels(models);
+      const nextModel = models[0];
+      setSelectedDeployModelId(nextModel?.id || "custom");
+      setCustomModelName("");
+      setCustomModelUrl("");
+      setBenchmarkTool(nextEngine === "vllm_cpu" ? "vllm_bench_serve" : "llama_bench");
+      if (nextModel) {
+        if (!ocpus || Number(ocpus) < nextModel.recommended_ocpus) setOcpus(String(nextModel.recommended_ocpus));
+        if (!memoryGbs || Number(memoryGbs) < nextModel.recommended_memory_gbs) setMemoryGbs(String(nextModel.recommended_memory_gbs));
+      }
+      setStatus({ kind: "ok", message: `${nextEngine === "vllm_cpu" ? "CPU vLLM" : "llama.cpp"} model choices loaded.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -1036,6 +1420,7 @@ export function App() {
     setConcurrency(preset.concurrency);
     setRequests(preset.requests);
     setMaxTokens(preset.maxTokens);
+    setDisablePromptCache(preset.focus === "prefill");
     setBenchmarkName(cleanBenchmarkName(`${preset.benchmarkName}-${experimentLane}`));
     const matchingPrompt = promptSets.find((item) => item.name === preset.promptHint);
     if (matchingPrompt) setSelectedPromptSetId(String(matchingPrompt.id));
@@ -1073,13 +1458,73 @@ export function App() {
         concurrency,
         requests,
         max_tokens: maxTokens,
-        temperature: 0
+        temperature: 0,
+        benchmark_tool: benchmarkTool,
+        disable_prompt_cache: supportsPromptCacheControl && disablePromptCache,
       });
       const benchmarkList = await api.benchmarks();
       const experimentList = await api.experiments();
       setBenchmarks(benchmarkList);
       setExperiments(experimentList);
       setStatus({ kind: "ok", message: `Benchmark complete: ${record.name}.` });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setActiveAction("idle");
+    }
+  }
+
+  async function runComparisonBenchmark() {
+    if (!activeExperiment || !selectedPreset || !selectedPromptSetId) {
+      setStatus({ kind: "error", message: "Select a benchmark preset and its preloaded prompt workload first." });
+      return;
+    }
+    // The provisioning form's shape selections are browser-only state and are
+    // empty after a refresh. The persisted instance names are the durable
+    // source of the comparison roles; retain the shape lookup as a fallback
+    // for experiments created before the role suffixes existed.
+    const baseline = experimentInstances.find((item) => item.display_name.toLowerCase().endsWith("-baseline"))
+      || experimentInstances.find((item) => item.shape === comparisonPrimaryShape);
+    const candidate = experimentInstances.find((item) => item.display_name.toLowerCase().endsWith("-candidate"))
+      || experimentInstances.find((item) => item.id !== baseline?.id && item.shape === comparisonCandidateShape)
+      || experimentInstances.find((item) => item.id !== baseline?.id);
+    const targets = [
+      { instance: baseline, lane: "primary", label: "baseline" },
+      { instance: candidate, lane: "comparison", label: "candidate" },
+    ];
+    if (targets.some((item) => !item.instance || item.instance.lifecycle_state !== "RUNNING" || !(item.instance.public_ip || item.instance.private_ip))) {
+      setStatus({ kind: "error", message: "Both comparison instances must be RUNNING with an IP before the matched benchmark can run." });
+      return;
+    }
+
+    setActiveAction("benchmark");
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        const instance = target.instance!;
+        setStatus({ kind: "loading", message: `Running ${selectedPreset.name} with ${benchmarkTool === "http_streaming" ? "the end-to-end HTTP test" : benchmarkTool === "llama_bench" ? "llama-bench" : "vLLM bench serve"} on ${instance.shape} (${index + 1} of ${targets.length}).` });
+        await api.runBenchmark({
+          experiment_id: activeExperiment.id,
+          instance_id: instance.id,
+          name: cleanBenchmarkName(`${selectedPreset.benchmarkName}-${target.label}`),
+          preset_id: selectedPreset.id,
+          preset_name: selectedPreset.name,
+          preset_focus: selectedPreset.focus,
+          comparison_group: selectedPreset.comparisonGroup,
+          experiment_lane: target.lane,
+          prompt_set_id: Number(selectedPromptSetId),
+          concurrency,
+          requests,
+          max_tokens: maxTokens,
+          temperature: 0,
+          benchmark_tool: benchmarkTool,
+          disable_prompt_cache: supportsPromptCacheControl && disablePromptCache,
+        });
+      }
+      const [benchmarkList, experimentList] = await Promise.all([api.benchmarks(), api.experiments()]);
+      setBenchmarks(benchmarkList);
+      setExperiments(experimentList);
+      setStatus({ kind: "ok", message: benchmarkTool === "llama_bench" ? `Matched ${selectedPreset.name} llama-bench results were saved for both shapes. Compare isolated prompt and decode tokens/sec below; TTFT is not part of this microbenchmark.` : `Matched ${selectedPreset.name} results were saved for both shapes. Compare TTFT, approximate ITL, latency p95, and throughput below.` });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -1535,8 +1980,11 @@ export function App() {
             <div className="divider-label">or create a new one</div>
             <label>Name<input value={experimentName} onChange={(event) => setExperimentName(event.target.value)} /></label>
             <label>Description<input value={experimentDescription} onChange={(event) => setExperimentDescription(event.target.value)} /></label>
-            <label>Experiment type<select value={experimentKind} onChange={(event) => setExperimentKind(event.target.value)}><option value="cpu-instance">OCI CPU instance / llama.cpp</option><option value="llm-d-cluster">Lab 3 · LLM-D on existing CPU cluster</option><option value="llm-d-autoscaling">Lab 4 · LLM-D autoscaling and observability</option></select></label>
-            <button className="primary" onClick={createExperiment} disabled={isBusy}><Cloud size={16} /> Create experiment</button>
+            <label>Experiment type<select value={experimentKind} onChange={(event) => setExperimentKind(event.target.value)}><option value="cpu-instance">OCI CPU instance / llama.cpp</option><option value="cpu-shape-comparison">CPU shape comparison / llama.cpp</option><option value="llm-d-cluster">Lab 3 · LLM-D on existing CPU cluster</option><option value="llm-d-autoscaling">Lab 4 · LLM-D autoscaling and observability</option><option value="llm-d-routing">Lab 5 · Hybrid LLM-D model routing</option></select></label>
+            {experimentKind === "cpu-shape-comparison" && <p className="muted">Creates two OCI CPU instances with the same model and llama.cpp settings, then runs the selected preloaded workload on both. You choose the two shapes after loading OCI. Both instances are billable and are owned by this experiment.</p>}
+            {experimentKind === "llm-d-routing" && <label>Linked Lab 4 source<select value={sourceExperimentId} onChange={(event) => setSourceExperimentId(event.target.value)}><option value="">Select ready Lab 4 autoscaling experiment</option>{lab4Experiments.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}</select></label>}
+            {experimentKind === "llm-d-routing" && <p className="muted">Lab 5 creates only a private LiteLLM router, ServiceMonitor, dashboard ConfigMap, and its own Secret. It does not modify the linked Lab 4 EPP, model servers, KEDA policy, or observability stack.</p>}
+            <button className="primary" onClick={createExperiment} disabled={isBusy || (experimentKind === "llm-d-routing" && !sourceExperimentId)}><Cloud size={16} /> Create experiment</button>
           </div>
         </section>
       </main>
@@ -1563,21 +2011,23 @@ export function App() {
         <section className="experiment-heading">
           <div>
             <h1>{activeExperiment.name}</h1>
-            <p>{isLab4Experiment ? "Scale LLM-D CPU vLLM replicas from EPP demand and observe the result with Prometheus, Grafana, and KEDA." : isLlmDExperiment ? "Deploy and tune LLM-D with CPU vLLM replicas on an existing Kubernetes cluster." : activeExperiment.description || "No description"}</p>
+            <p>{isLab5Experiment ? "Route explicit aliases through a private LiteLLM proxy: local aliases remain on the linked Lab 4 LLM-D path, while selected external aliases use OpenRouter." : isLab4Experiment ? "Scale LLM-D CPU vLLM replicas from EPP demand and observe the result with Prometheus, Grafana, and KEDA." : isLlmDExperiment ? "Deploy and tune LLM-D with CPU vLLM replicas on an existing Kubernetes cluster." : isCpuComparisonExperiment ? "Deploy one identical llama.cpp and GGUF configuration to two OCI CPU shapes, then run matched prompt suites to compare TTFT, approximate inter-token latency, latency, and throughput." : activeExperiment.description || "No description"}</p>
           </div>
           <div className="phase-pill">{activeExperiment.status}</div>
         </section>
 
-        <StepRail steps={isLab4Experiment ? lab4WorkflowSteps : isLlmDExperiment ? llmdWorkflowSteps : workflowSteps} />
+        <StepRail steps={isLab5Experiment ? lab5WorkflowSteps : isLab4Experiment ? lab4WorkflowSteps : isLlmDExperiment ? llmdWorkflowSteps : workflowSteps} />
         <div className={`status ${status.kind}`}><StatusIcon kind={status.kind} /> <span>{status.message}</span></div>
 
         <div className="view-tabs">
-          {isLlmDExperiment ? <button className={view === "llmd" ? "selected" : ""} onClick={() => setView("llmd")}>{isLab4Experiment ? "Lab 4 · Autoscaling" : "LLM-D cluster lab"}</button> : <>
+          {isLab5Experiment ? <button className={view === "routing" ? "selected" : ""} onClick={() => setView("routing")}>Lab 5 · Hybrid routing</button> : isLlmDExperiment ? <button className={view === "llmd" ? "selected" : ""} onClick={() => setView("llmd")}>{isLab4Experiment ? "Lab 4 · Autoscaling" : "LLM-D cluster lab"}</button> : <>
             <button className={view === "setup" ? "selected" : ""} onClick={() => setView("setup")}>Setup</button>
             <button className={view === "benchmarks" ? "selected" : ""} onClick={() => setView("benchmarks")} disabled={!hasProvisionedInstance}>Benchmarks</button>
             <button className={view === "hackathon" ? "selected" : ""} onClick={() => setView("hackathon")} disabled={!hasDeployed}>Hackathon</button>
           </>}
         </div>
+
+        {view === "routing" && isLab5Experiment && <RoutingLab experiment={activeExperiment} lab4Experiments={lab4Experiments} onRefreshExperiments={loadInitial} />}
 
         {view === "llmd" && <>
           <section className="panel">
@@ -1801,10 +2251,39 @@ export function App() {
           </div>
         </section>
 
-        <section id="provision" className="panel">
+        {isCpuComparisonExperiment ? <section id="provision" className="panel">
+          <h2><Server size={18} /> Provision matched CPU shape pair</h2>
+          <p className="muted">The workbench applies the same image, OCPUs, memory, SSH settings, model, llama.cpp settings, prompt suite, concurrency, and output limit to both instances. Only the two selected CPU shapes should differ.</p>
+          <div className="info-box">
+            <Info size={16} />
+            <div><strong>Cost and cleanup</strong><span>This action creates two billable OCI Compute instances. The existing <em>Delete infra</em> control only targets instances recorded as owned by this experiment.</span></div>
+          </div>
+          <div className="form-grid">
+            <label>Availability domain<select value={availabilityDomain} onChange={(event) => changeAvailabilityDomain(event.target.value)}>{availabilityDomains.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>VCN<select value={vcnId} onChange={(event) => changeVpc(event.target.value)}>{vcns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Subnet<select value={subnetId} onChange={(event) => setSubnetId(event.target.value)}>{subnets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <button onClick={refreshInfra} disabled={isBusy}><RefreshCcw size={16} /> Refresh infra</button>
+            <label>Baseline CPU shape<select value={comparisonPrimaryShape} onChange={(event) => { setComparisonPrimaryShape(event.target.value); changeShape(event.target.value); }}>{shapes.filter((item) => optionShapeClass(item) !== "gpu").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Candidate CPU shape<select value={comparisonCandidateShape} onChange={(event) => setComparisonCandidateShape(event.target.value)}>{shapes.filter((item) => optionShapeClass(item) !== "gpu").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Shared image<select value={imageId} onChange={(event) => setImageId(event.target.value)}>{images.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Shared OCPUs<input value={ocpus} onChange={(event) => setOcpus(event.target.value)} placeholder="required for Flex shapes" /></label>
+            <label>Shared memory GB<input value={memoryGbs} onChange={(event) => setMemoryGbs(event.target.value)} placeholder="required for Flex shapes" /></label>
+            <label>SSH user<select value={sshUser} onChange={(event) => setSshUser(event.target.value)}><option value="opc">opc</option><option value="ubuntu">ubuntu</option></select></label>
+            <label>SSH key<select value={sshKeyId} onChange={(event) => setSshKeyId(event.target.value)}>{sshKeys.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>New key name<input value={newKeyName} onChange={(event) => setNewKeyName(event.target.value)} /></label>
+            <button onClick={createKey} disabled={isBusy}><KeyRound size={16} /> Generate key</button>
+            <label>Instance base name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
+            <button className="primary" onClick={createComparisonInstances} disabled={isBusy || hasComparisonPair || comparisonUsesUnverifiedShapes}><Rocket size={16} /> {activeAction === "provision" ? "Provisioning pair" : hasComparisonPair ? "Pair provisioned" : comparisonUsesUnverifiedShapes ? "Provision matched pair — OCI verification required" : "Provision matched pair"}</button>
+          </div>
+          {comparisonUsesUnverifiedShapes && <div className="info-box">
+            <Info size={16} />
+            <div><strong>CPU shapes are not verified by OCI</strong><span>The displayed E6 pair is only a reference because OCI’s shape-list API returned no compatible CPU shapes for this compartment and availability domain. Select another availability domain or compartment and reload OCI before provisioning.</span></div>
+          </div>}
+          {hasComparisonPair && <InstanceTable instances={experimentInstances} />}
+        </section> : <section id="provision" className="panel">
           <h2><Server size={18} /> Provision experiment instance</h2>
           <div className="form-grid">
-            <label>Availability domain<select value={availabilityDomain} onChange={(event) => setAvailabilityDomain(event.target.value)}>{availabilityDomains.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Availability domain<select value={availabilityDomain} onChange={(event) => changeAvailabilityDomain(event.target.value)}>{availabilityDomains.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <label>VCN<select value={vcnId} onChange={(event) => changeVpc(event.target.value)}>{vcns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <label>Subnet<select value={subnetId} onChange={(event) => setSubnetId(event.target.value)}>{subnets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <button onClick={refreshInfra} disabled={isBusy}><RefreshCcw size={16} /> Refresh infra</button>
@@ -1824,51 +2303,54 @@ export function App() {
             <label>Instance name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
             <button className="primary" onClick={createInstance} disabled={isBusy}><Rocket size={16} /> {activeAction === "provision" ? "Provisioning" : "Provision"}</button>
           </div>
-        </section>
+        </section>}
 
         <section id="deploy" className="panel">
-          <h2><Rocket size={18} /> Deploy llama.cpp</h2>
+          <h2><Rocket size={18} /> Deploy CPU inference engine</h2>
           <div className="info-grid">
             <div className="info-box">
               <Info size={16} />
               <div>
-                <strong>{selectedDeployModel?.name || "Custom GGUF model"}</strong>
-                <span>{selectedDeployModel?.description || "Provide a direct GGUF download URL. The remote instance must be able to download it."}</span>
+                <strong>{selectedDeployModel?.name || (selectedInferenceEngine === "vllm_cpu" ? "Custom Hugging Face model" : "Custom GGUF model")}</strong>
+                <span>{selectedDeployModel?.description || (selectedInferenceEngine === "vllm_cpu" ? "Provide a public Hugging Face repository ID. The remote instance downloads its weights directly." : "Provide a direct GGUF download URL. The remote instance must be able to download it.")}</span>
                 {selectedDeployModel && <em>Recommended: {selectedDeployModel.recommended_ocpus} OCPU / {selectedDeployModel.recommended_memory_gbs} GB</em>}
               </div>
             </div>
             <div className="info-box">
               <Info size={16} />
               <div>
-                <strong>{buildNative ? "Native optimized llama.cpp build" : "Portable llama.cpp build"}</strong>
-                <span>{buildNative ? "Uses -DGGML_NATIVE=ON so llama.cpp can use CPU features available on the selected shape." : "Uses portable flags and disables AVX512 variants for compatibility across shapes."}</span>
-                <em>{buildNative ? (disableVnni ? "Native build with VNNI disabled for Oracle Linux toolchain compatibility" : "Aggressive native build; may fail if the toolchain rejects VNNI instructions") : "Best for safe first deploys"}</em>
+                <strong>{selectedInferenceEngine === "vllm_cpu" ? "CPU vLLM server" : buildNative ? "Native optimized llama.cpp build" : "Portable llama.cpp build"}</strong>
+                <span>{selectedInferenceEngine === "vllm_cpu" ? "Installs the vLLM CPU wheel with the AMD Zen extra, reserves one framework CPU, and keeps the service on remote localhost." : buildNative ? "Uses -DGGML_NATIVE=ON so llama.cpp can use CPU features available on the selected shape." : "Uses portable flags and disables AVX512 variants for compatibility across shapes."}</span>
+                <em>{selectedInferenceEngine === "vllm_cpu" ? "CPU vLLM uses bfloat16 and its automatic AMD Zen kernel selection when available." : buildNative ? (disableVnni ? "Native build with VNNI disabled for Oracle Linux toolchain compatibility" : "Aggressive native build; may fail if the toolchain rejects VNNI instructions") : "Best for safe first deploys"}</em>
               </div>
             </div>
           </div>
           <div className="form-grid">
-            <label>Instance<select value={selectedInstanceId || String(selectedInstance?.id || "")} onChange={(event) => setSelectedInstanceId(event.target.value)}>{experimentInstances.map((item) => <option key={item.id} value={item.id}>{item.display_name} · {item.lifecycle_state || "unknown"} · {item.public_ip || item.private_ip}</option>)}</select></label>
+            {!isCpuComparisonExperiment && <label>Instance<select value={selectedInstanceId || String(selectedInstance?.id || "")} onChange={(event) => setSelectedInstanceId(event.target.value)}>{experimentInstances.map((item) => <option key={item.id} value={item.id}>{item.display_name} · {item.lifecycle_state || "unknown"} · {item.public_ip || item.private_ip}</option>)}</select></label>}
+            {isCpuComparisonExperiment && <div className="info-box"><Info size={16} /><div><strong>Matched deployment</strong><span>Deploy applies this exact engine, model, and CPU configuration to both selected CPU shapes.</span></div></div>}
+            <label>Inference engine<select value={selectedInferenceEngine} onChange={(event) => changeInferenceEngine(event.target.value as "llama_cpp" | "vllm_cpu")}><option value="llama_cpp">llama.cpp · GGUF</option><option value="vllm_cpu">vLLM · CPU</option></select></label>
             <label>Model<select value={selectedDeployModelId} onChange={(event) => changeDeployModel(event.target.value)}>
               {deployModels.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.size_label} · {item.quantization}</option>)}
-              <option value="custom">Custom GGUF URL</option>
+              <option value="custom">{selectedInferenceEngine === "vllm_cpu" ? "Custom public Hugging Face model" : "Custom GGUF URL"}</option>
             </select></label>
             {selectedDeployModelId === "custom" && <>
-              <label>Custom model name<input value={customModelName} onChange={(event) => setCustomModelName(event.target.value)} placeholder="My GGUF model" /></label>
-              <label>Custom model URL<input value={customModelUrl} onChange={(event) => setCustomModelUrl(event.target.value)} placeholder="https://.../model.gguf" /></label>
+              <label>Custom model name<input value={customModelName} onChange={(event) => setCustomModelName(event.target.value)} placeholder={selectedInferenceEngine === "vllm_cpu" ? "My HF model" : "My GGUF model"} /></label>
+              <label>{selectedInferenceEngine === "vllm_cpu" ? "Hugging Face repository ID" : "Custom model URL"}<input value={customModelUrl} onChange={(event) => setCustomModelUrl(event.target.value)} placeholder={selectedInferenceEngine === "vllm_cpu" ? "org/model" : "https://.../model.gguf"} /></label>
             </>}
             <label className="checkbox-row"><input type="checkbox" checked={showDeployAdvanced} onChange={(event) => setShowDeployAdvanced(event.target.checked)} /> Advanced settings</label>
-            <button className="primary" onClick={deploySelected} disabled={isBusy || !selectedInstanceReady}><Play size={16} /> {activeAction === "deploy" ? "Deploying" : "Deploy"}</button>
+            <button className="primary" onClick={isCpuComparisonExperiment ? deployComparisonInstances : deploySelected} disabled={isBusy || (isCpuComparisonExperiment ? !comparisonInstancesReady : !selectedInstanceReady)}><Play size={16} /> {activeAction === "deploy" ? "Deploying" : isCpuComparisonExperiment ? "Deploy to both shapes" : "Deploy"}</button>
           </div>
           {showDeployAdvanced && <div className="advanced-grid">
+            {selectedInferenceEngine === "llama_cpp" && <>
             <label className="checkbox-row"><input type="checkbox" checked={buildNative} onChange={(event) => setBuildNative(event.target.checked)} /> Build with `-DGGML_NATIVE=ON`</label>
             <label className="checkbox-row"><input type="checkbox" checked={disableVnni} onChange={(event) => setDisableVnni(event.target.checked)} /> Disable VNNI instructions</label>
+            </>}
             <label>Context size<input type="number" min={512} value={deployCtxSize} onChange={(event) => setDeployCtxSize(Number(event.target.value))} /></label>
-            <label>Parallel slots<input type="number" min={1} value={deployParallel} onChange={(event) => setDeployParallel(Number(event.target.value))} /></label>
-            <label>Batch size<input type="number" min={1} value={deployBatchSize} onChange={(event) => setDeployBatchSize(Number(event.target.value))} /></label>
-            <label>Micro-batch size<input type="number" min={1} value={deployUbatchSize} onChange={(event) => setDeployUbatchSize(Number(event.target.value))} /></label>
+            <label>{selectedInferenceEngine === "vllm_cpu" ? "Max concurrent sequences" : "Parallel slots"}<input type="number" min={1} value={deployParallel} onChange={(event) => setDeployParallel(Number(event.target.value))} /></label>
+            {selectedInferenceEngine === "vllm_cpu" ? <label>CPU KV cache GiB<input type="number" min={1} value={deployCpuKvCacheGib} onChange={(event) => setDeployCpuKvCacheGib(Number(event.target.value))} /></label> : <><label>Batch size<input type="number" min={1} value={deployBatchSize} onChange={(event) => setDeployBatchSize(Number(event.target.value))} /></label><label>Micro-batch size<input type="number" min={1} value={deployUbatchSize} onChange={(event) => setDeployUbatchSize(Number(event.target.value))} /></label></>}
           </div>}
           <div className="hint-row">
-            <span>Current instance: {selectedInstance ? `${selectedInstance.lifecycle_state || "unknown"} · ${selectedInstance.public_ip || selectedInstance.private_ip || "waiting for IP"}` : "none selected"}</span>
+            <span>{isCpuComparisonExperiment ? `Comparison pair: ${experimentInstances.map((item) => `${item.shape} · ${item.lifecycle_state || "unknown"}`).join(" | ") || "not provisioned"}` : `Current instance: ${selectedInstance ? `${selectedInstance.lifecycle_state || "unknown"} · ${selectedInstance.public_ip || selectedInstance.private_ip || "waiting for IP"}` : "none selected"}`}</span>
           </div>
           <InstanceTable instances={experimentInstances} />
         </section>
@@ -1890,21 +2372,35 @@ export function App() {
               <Info size={16} />
               <div><strong>{selectedLane?.name || "Comparison lane"}</strong><span>{selectedLane?.description || "Label this run for later comparison."}</span><em>Selected shape class: {selectedShapeClass}</em></div>
             </div>
+            <div className="info-box">
+              <Info size={16} />
+              <div><strong>{benchmarkTool === "http_streaming" ? "End-to-end HTTP streaming" : benchmarkTool === "llama_bench" ? "llama-bench microbenchmark" : "vLLM bench serve"}</strong><span>{benchmarkTool === "http_streaming" ? "Measures the complete streamed request path through the local SSH tunnel. Use it for comparable TTFT, approximate ITL, latency, and throughput." : benchmarkTool === "llama_bench" ? "Measures isolated llama.cpp prompt and decode token throughput on the instance. It intentionally does not report networked TTFT." : "Runs the vLLM serving benchmark against the private local vLLM service and reports serving TTFT, TPOT, and throughput."}</span><em>Recommended for deployed engine: {nativeBenchmarkTool === "llama_bench" ? "llama-bench" : "vLLM bench serve"}</em></div>
+            </div>
           </div>
+          {isCpuComparisonExperiment && <div className="info-box comparison-runner">
+            <Info size={16} />
+            <div><strong>Matched shape run</strong><span>Runs this selected preset and preloaded prompt set sequentially on both shapes. It labels the first selected shape as Primary and the second as Comparison, so the result charts and table line up automatically.</span></div>
+            <button className="primary" onClick={runComparisonBenchmark} disabled={isBusy || !comparisonInstancesReady}><Activity size={16} /> {activeAction === "benchmark" ? "Running matched suite" : "Run on both shapes"}</button>
+          </div>}
           <div className="form-grid">
             <label>Preset<select value={selectedPresetId} onChange={(event) => applyPreset(event.target.value)}>
               {BENCHMARK_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
             </select></label>
-            <label>Compare as<select value={experimentLane} onChange={(event) => changeExperimentLane(event.target.value)}>
-              {LANE_OPTIONS.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
+            <label>Benchmark method<select value={benchmarkTool} onChange={(event) => setBenchmarkTool(event.target.value)}>
+              <option value="http_streaming">HTTP streaming · end-to-end</option>
+              <option value={nativeBenchmarkTool}>{nativeBenchmarkTool === "llama_bench" ? "llama-bench · native microbenchmark" : "vLLM bench serve · native serving benchmark"}</option>
             </select></label>
+            {!isCpuComparisonExperiment && <label>Compare as<select value={experimentLane} onChange={(event) => changeExperimentLane(event.target.value)}>
+              {LANE_OPTIONS.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
+            </select></label>}
             <label>Prompt set<select value={selectedPromptSetId} onChange={(event) => setSelectedPromptSetId(event.target.value)}>{promptSets.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.prompt_count} prompts</option>)}</select></label>
-            <label>Name<input value={benchmarkName} onChange={(event) => setBenchmarkName(event.target.value)} /></label>
+            {!isCpuComparisonExperiment && <label>Name<input value={benchmarkName} onChange={(event) => setBenchmarkName(event.target.value)} /></label>}
             <label>Concurrency<input type="number" min={1} value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} /></label>
             <label>Requests<input type="number" min={1} value={requests} onChange={(event) => setRequests(Number(event.target.value))} /></label>
             <label>Max tokens<input type="number" min={1} value={maxTokens} onChange={(event) => setMaxTokens(Number(event.target.value))} /></label>
+            {supportsPromptCacheControl && <label className="checkbox-row" title="Sends cache_prompt: false with each llama.cpp HTTP request. Use it for cache-cold prefill and TTFT comparisons."><input type="checkbox" checked={disablePromptCache} onChange={(event) => setDisablePromptCache(event.target.checked)} /><span><strong>Disable llama.cpp prompt cache</strong><br /><small>Recommended for cold-prefill TTFT tests; no redeploy required.</small></span></label>}
             <label>Upload prompts<input type="file" accept=".txt,.md" onChange={(event) => uploadPrompt(event.target.files?.[0])} /></label>
-            <button className="primary" onClick={runBenchmark} disabled={isBusy || !selectedInstanceReady}><Upload size={16} /> {activeAction === "benchmark" ? "Running" : "Run benchmark"}</button>
+            {!isCpuComparisonExperiment && <button className="primary" onClick={runBenchmark} disabled={isBusy || !selectedInstanceReady}><Upload size={16} /> {activeAction === "benchmark" ? "Running" : "Run benchmark"}</button>}
           </div>
         </section>
 
@@ -2079,8 +2575,8 @@ function InstanceTable({ instances }: { instances: InstanceRecord[] }) {
   if (!instances.length) return <p className="muted">No app-created instances yet.</p>;
   return (
     <table>
-      <thead><tr><th>Name</th><th>Shape</th><th>State</th><th>Public IP</th><th>SSH user</th></tr></thead>
-      <tbody>{instances.map((item) => <tr key={item.id}><td>{item.display_name}</td><td>{item.shape}</td><td>{item.lifecycle_state}</td><td>{item.public_ip || "n/a"}</td><td>{item.ssh_user}</td></tr>)}</tbody>
+      <thead><tr><th>Name</th><th>Shape</th><th>State</th><th>Engine</th><th>Model</th><th>Public IP</th><th>SSH user</th></tr></thead>
+      <tbody>{instances.map((item) => <tr key={item.id}><td>{item.display_name}</td><td>{item.shape}</td><td>{item.lifecycle_state}</td><td>{item.inference_engine === "vllm_cpu" ? "CPU vLLM" : item.inference_engine === "llama_cpp" ? "llama.cpp" : "not deployed"}</td><td>{item.deployed_model_name || "n/a"}</td><td>{item.public_ip || "n/a"}</td><td>{item.ssh_user}</td></tr>)}</tbody>
     </table>
   );
 }
@@ -2089,8 +2585,8 @@ function BenchmarkTable({ benchmarks }: { benchmarks: BenchmarkRecord[] }) {
   if (!benchmarks.length) return <p className="muted">No benchmarks yet.</p>;
   return (
     <table>
-      <thead><tr><th>Name</th><th>Preset</th><th>Lane</th><th>Shape</th><th>Concurrency</th><th>Requests</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Raw file</th></tr></thead>
-      <tbody>{benchmarks.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.summary.preset_name || "n/a"}</td><td>{laneLabel(item.summary.experiment_lane)}</td><td>{item.summary.shape || "n/a"}</td><td>{item.summary.concurrency}</td><td>{item.summary.requests}</td><td>{formatSeconds(metric(item.summary, "latency_seconds.p95"))}</td><td>{formatSeconds(metric(item.summary, "ttft_seconds.p95"))}</td><td>{formatNumber(item.summary.requests_per_second)}</td><td>{formatNumber(item.summary.approx_output_tokens_per_second)}</td><td>{item.raw_path}</td></tr>)}</tbody>
+      <thead><tr><th>Name</th><th>Method</th><th>Prompt cache</th><th>Preset</th><th>Lane</th><th>Shape</th><th>Concurrency</th><th>Runs</th><th>Prompt tok/s</th><th>Decode tok/s</th><th>Latency p95</th><th>TTFT p95</th><th>Req/s</th><th>Approx tok/s</th><th>Raw file</th></tr></thead>
+      <tbody>{benchmarks.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.summary.benchmark_tool_label || "HTTP streaming"}</td><td>{item.summary.prompt_cache_mode || "not recorded"}</td><td>{item.summary.preset_name || "n/a"}</td><td>{laneLabel(item.summary.experiment_lane)}</td><td>{item.summary.shape || "n/a"}</td><td>{item.summary.concurrency}</td><td>{item.summary.native_repetitions || item.summary.requests}</td><td>{formatNumber(item.summary.prompt_tokens_per_second)}</td><td>{formatNumber(item.summary.decode_tokens_per_second)}</td><td>{formatSeconds(metric(item.summary, "latency_seconds.p95"))}</td><td>{formatSeconds(metric(item.summary, "ttft_seconds.p95"))}</td><td>{formatNumber(item.summary.requests_per_second)}</td><td>{formatNumber(item.summary.approx_output_tokens_per_second)}</td><td>{item.raw_path}</td></tr>)}</tbody>
     </table>
   );
 }

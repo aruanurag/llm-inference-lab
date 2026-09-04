@@ -34,6 +34,26 @@ The first policy keeps one warm replica and uses these defaults: minimum 1, maxi
 - Size each node for the requested vLLM CPU and memory plus Kubernetes/router headroom. The model-server `requests` are the signal OKE uses when it sees an unschedulable Pending pod.
 - Use `kubectl` and `helm` with enough permissions to install CRDs only when choosing the dedicated Lab 4 stack.
 
+## OCI Inference Cloud Experiment Type
+
+In the app, create:
+
+```text
+Lab 4 · LLM-D autoscaling and observability
+```
+
+Use this experiment type when the main question is how CPU inference capacity reacts to demand. Lab 4 can install a dedicated lab-owned Prometheus/Grafana/KEDA stack on an isolated cluster, or validate existing platform services when a platform team already owns observability. It then deploys the LLM-D CPU vLLM path with EPP Flow Control enabled and renders a KEDA policy from EPP queue-depth and running-request metrics.
+
+Use the traffic recipes when you want repeatable runs:
+
+- baseline short prompts for a low-load reference
+- cold long prompts for prefill pressure
+- warm shared-prefix prompts for prefix-cache behavior
+- long-output prompts for decode pressure
+- sustained mixed traffic for KEDA and possible OKE node scale-out observations
+
+Keep Grafana captures, raw benchmark exports, endpoint URLs, cluster identifiers, and local notes outside Git unless they are explicitly redacted and intended as public examples.
+
 ## OCI Inference Cloud Workflow
 
 Create **Lab 4 · LLM-D autoscaling and observability** in OCI Inference Cloud.

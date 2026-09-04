@@ -3,6 +3,7 @@
 .AppleDouble
 .LSOverride
 ._*
+~$*.docx
 .vscode/
 .idea/
 *.swp
@@ -92,6 +93,12 @@ labs/*/results/**/*.txt
 # Private, locally captured dashboard images and notes from Lab 4 runs.
 labs/04-llm-d-autoscaling-on-oke/assets/
 labs/04-llm-d-autoscaling-on-oke/*-local.md
+
+# Lab 5 captures can include prompt/response content, route endpoints, and
+# workload-specific observability. Keep those local unless deliberately
+# redacted and documented as a public asset.
+labs/05-hybrid-model-routing-on-oke/assets/
+labs/05-hybrid-model-routing-on-oke/*-local.md
 
 # Preserve intentional placeholders and hand-written observations.
 !labs/*/results/**/.gitkeep

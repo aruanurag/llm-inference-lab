@@ -49,6 +49,59 @@ Write a detailed explanation of how request batching changes resource utilizatio
 """,
     },
     {
+        "name": "TTFT shape comparison · 24 unique long prompts",
+        "filename": "ttft-shape-comparison-24-unique-long-prompts.txt",
+        "description": "Twenty-four distinct long prompts for a matched CPU-shape TTFT test. Use concurrency 1, requests 24, and max tokens 128; warm up first, then compare TTFT p95 across shapes.",
+        "text": """Write a structured technical briefing on the LLM inference prefill phase for a CPU-hosted model. Explain tokenization, prompt evaluation, attention over the input context, KV-cache creation, and the moment the first output token becomes available. Include three likely CPU bottlenecks and how each would appear in a TTFT measurement.
+
+An engineering team serves a quantized 7B instruct model on a CPU VM. A user sends a long policy document and asks for a concise summary. Describe the end-to-end work that occurs before the first generated token, then propose a fair experiment for comparing that prefill work across two otherwise identical CPU shapes.
+
+Create a detailed troubleshooting guide for unexpectedly high time to first token in a local llama.cpp server. Cover input length, model size, quantization, CPU thread placement, memory locality, batch configuration, server queueing, and cold versus warm process state. Distinguish measurement evidence from assumptions.
+
+Explain why a request with a long prompt and a short answer is useful for isolating prefill performance. Contrast it with a short prompt and a very long answer, and describe which latency measurements each workload emphasizes. Use a concrete CPU inference example throughout.
+
+Write a design-review note for a team comparing two OCI CPU shapes with the same OCPU and memory allocation. They want to know whether one shape reduces p95 TTFT for a quantized model. Specify the controls, workload requirements, repetitions, and result interpretation needed for a defensible conclusion.
+
+Summarize the relationship between model weights, activations, and the KV cache during the first pass over a user prompt. Explain why keeping the model resident in memory is appropriate for a benchmark warm-up, while reusing the prompt KV state can invalidate a cold-prefill comparison.
+
+Produce a practical explanation of NUMA effects in CPU language-model inference. Include thread placement, memory allocation locality, remote-memory access, and why the effect might be more visible during long prompt processing than during token-by-token generation.
+
+An application asks a local model to analyze a long incident report containing timelines, metrics, and remediation notes. Describe how the server processes this prompt before responding. Then list the benchmark settings that should remain fixed when comparing the same analysis request on two CPU shapes.
+
+Write a technical memo explaining why TTFT is an end-to-end metric rather than a pure FLOPS measurement. Include request arrival, server scheduling, prompt-token processing, model execution, memory movement, and streaming-response overhead. Explain what a lower TTFT does and does not prove.
+
+Compare these two tests: twenty-four distinct long prompts issued once each, versus three long prompts repeated eight times each. Explain the benefits and limitations of each for measuring CPU prefill performance, cache behavior, statistical confidence, and reproducibility.
+
+Draft an experiment protocol for measuring long-context inference latency on two compute shapes. The model, GGUF quantization, context window, llama.cpp build settings, OCPU count, memory, prompt corpus, temperature, and output cap must be controlled. Include a warm-up phase and a reporting template.
+
+Explain how tokenization can influence an apparent TTFT comparison even when two prompts have similar character counts. Discuss vocabulary segmentation, input-token count, chat-template overhead, and why a benchmark should record prompt token counts when available.
+
+Write a clear explanation of why a 95th-percentile TTFT can be more informative than an average in an interactive inference service. Include examples of scheduler variability, occasional slow memory access, background contention, and small sample-size limitations.
+
+An SRE observes that a CPU model server has stable inter-token latency but variable TTFT on long prompts. Provide a root-cause tree that separates prompt-length effects, request queueing, CPU scheduling, memory locality, cache reuse, and model-loading behavior.
+
+Prepare a short internal guide explaining how `--ctx-size`, `--batch-size`, and `--ubatch-size` can affect prompt processing in llama.cpp. State why all three should remain unchanged while comparing CPU shapes, and identify which follow-up experiment could safely tune them.
+
+Describe the computational difference between prefill and decode for an autoregressive language model. Explain why prefill processes many input tokens together while decode advances token by token, and why a CPU-shape advantage can appear more clearly in one phase than the other.
+
+Write a post-run analysis checklist for a CPU-shape TTFT experiment. Include verification of successful requests, equal prompt distribution, p50/p95/p99 TTFT, latency p95, approximate inter-token latency, outlier investigation, and whether a second trial agrees with the first.
+
+An architect wants to determine whether a CPU shape's locality features improve a RAG-style workload. Propose a prompt corpus made of distinct long retrieved contexts, explain why repeated identical contexts are a separate cache-locality test, and recommend the primary performance metric.
+
+Explain the difference between a process warm-up and an application-level prompt-cache warm-up. For each, state what resource becomes resident or reusable, how it affects TTFT, and whether it should be included in a fair cold-prefill comparison.
+
+Create an incident-style narrative: an inference service's p95 TTFT rises after prompts grow from 200 to 2,000 tokens, but output-token speed remains similar. Analyze what this indicates about prefill, decode, queueing, and the likely value of a CPU-shape comparison.
+
+Write a concise benchmark-report section comparing two shapes when Shape A has lower p95 TTFT but nearly identical inter-token latency to Shape B. Give three cautious hardware-level interpretations and list additional experiments required before making a causal claim.
+
+Summarize the data path for a long chat-completion request sent through a local endpoint to llama.cpp on an OCI VM. Include the client request, SSH tunnel if present, HTTP server, chat template, prompt evaluation, KV-cache allocation, first streamed token, and remaining decode stream.
+
+Develop a test plan for detecting accidental prompt-cache reuse in a TTFT benchmark. Include use of unique prompts, server restart or cache controls, log inspection, request ordering, and a paired repeated-prefix experiment that intentionally demonstrates the cache effect.
+
+Write an executive-friendly explanation of why two CPU systems with the same OCPU and memory allocation can still produce different long-prompt TTFT. Cover processor microarchitecture, memory topology, compiler instruction selection, operating-system scheduling, and measurement noise without overstating certainty.
+""",
+    },
+    {
         "name": "Long decode prompts",
         "filename": "long-decode-prompts.txt",
         "description": "Short prompts that request longer answers. Use this to stress decode throughput and compare output characters/sec or approximate tokens/sec.",
@@ -177,7 +230,72 @@ def generated_decode_heavy_csv(count: int) -> str:
     return stream.getvalue()
 
 
+def generated_unique_prefill_prompts(count: int, *, context_repetitions: int) -> str:
+    """Create non-repeating prompt corpora for Lab 1 HTTP TTFT length sweeps."""
+
+    tasks = [
+        "Explain the likely prefill bottleneck and one way to measure it.",
+        "Summarize the workload and identify the first-token critical path.",
+        "Write a compact diagnosis of the expected CPU pressure before generation begins.",
+        "Describe the controls needed to compare this request fairly across two CPU shapes.",
+    ]
+    shared_context = (
+        "A CPU-hosted instruct model receives a technical analysis request. The server must tokenize the input, "
+        "evaluate the prompt, build KV state, schedule the request, and stream a concise answer. "
+    )
+    prompts = []
+    for index in range(count):
+        unique_lead = (
+            f"Unique prefill case {index + 1:02d}. This request has an independent report identifier "
+            f"{70_000 + index * 137} and should not reuse an earlier request context. "
+        )
+        prompts.append(
+            f"{unique_lead}{shared_context * context_repetitions}\n{tasks[index % len(tasks)]}"
+        )
+    return "\n\n".join(prompts)
+
+
+def generated_shared_prefix_prompts(count: int) -> str:
+    """Create an explicit cache or reuse diagnostic, separate from the cold TTFT corpus."""
+
+    shared_prefix = (
+        "Shared briefing: a team is comparing an OCI E6 Flex CPU shape with an E6 Ax Flex CPU shape using the "
+        "same model, OCPU allocation, memory, inference server, and benchmark settings. They record TTFT, "
+        "inter-token latency, request throughput, and any server-reported prompt-cache or prefix-cache behavior. "
+    ) * 12
+    prompts = []
+    for index in range(count):
+        prompts.append(
+            f"{shared_prefix}\nQuestion {index + 1}: provide one distinct operational recommendation in two short paragraphs."
+        )
+    return "\n\n".join(prompts)
+
+
 DEFAULT_PROMPT_SETS.extend([
+    {
+        "name": "TTFT length sweep · short unique prompts",
+        "filename": "ttft-length-sweep-short-unique-prompts.txt",
+        "description": "24 distinct short prompts for the short point in a matched TTFT length sweep. Use concurrency 1, requests 24, and max tokens 64 or 128.",
+        "text": generated_unique_prefill_prompts(24, context_repetitions=1),
+    },
+    {
+        "name": "TTFT length sweep · medium unique prompts",
+        "filename": "ttft-length-sweep-medium-unique-prompts.txt",
+        "description": "24 distinct medium prompts for the middle point in a matched TTFT length sweep. Hold model, server settings, requests, and max tokens fixed across every length.",
+        "text": generated_unique_prefill_prompts(24, context_repetitions=8),
+    },
+    {
+        "name": "TTFT length sweep · long unique prompts",
+        "filename": "ttft-length-sweep-long-unique-prompts.txt",
+        "description": "24 distinct long prompts for the final point in a matched TTFT length sweep. They are roughly 1,500 input tokens under the lab's characters-divided-by-four planning estimate; use concurrency 1, requests 24, and max tokens 128.",
+        "text": generated_unique_prefill_prompts(24, context_repetitions=30),
+    },
+    {
+        "name": "TTFT shared-prefix reuse diagnostic · 24 prompts",
+        "filename": "ttft-shared-prefix-reuse-diagnostic-24-prompts.txt",
+        "description": "24 prompts with an intentionally shared long prefix. Run only after the unique-prompt baseline to quantify cache or reuse sensitivity; do not use it as the primary cold-prefill shape result.",
+        "text": generated_shared_prefix_prompts(24),
+    },
     {
         "name": "LLM-D · 100 unique prompts (CSV)",
         "filename": "llmd-100-unique-prompts.csv",

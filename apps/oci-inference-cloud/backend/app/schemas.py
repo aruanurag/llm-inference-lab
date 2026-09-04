@@ -44,6 +44,8 @@ class ExperimentCreate(BaseModel):
     name: str
     description: str = ""
     kind: str = "cpu-instance"
+    # Lab 5 links to—not copies or takes ownership of—an existing Lab 4 experiment.
+    source_experiment_id: int | None = Field(default=None, ge=1)
 
 
 class ExperimentRecord(BaseModel):
@@ -51,6 +53,7 @@ class ExperimentRecord(BaseModel):
     name: str
     description: str = ""
     kind: str = "cpu-instance"
+    source_experiment_id: int | None = None
     status: str
     created_at: str
     updated_at: str
@@ -87,6 +90,10 @@ class InstanceRecord(BaseModel):
     ssh_user: str
     public_ip: str | None = None
     private_ip: str | None = None
+    inference_engine: str | None = None
+    deployed_model_id: str | None = None
+    deployed_model_name: str | None = None
+    deployed_model_source: str | None = None
     created_at: str
     updated_at: str
 
@@ -108,9 +115,11 @@ class DeployModelOption(BaseModel):
     recommended_ocpus: int
     recommended_memory_gbs: int
     description: str
+    engine: str = "llama_cpp"
 
 
 class DeployRequest(BaseModel):
+    engine: str = "llama_cpp"
     model_id: str = "qwen2.5-1.5b-q4_k_m"
     custom_model_name: str | None = None
     custom_model_url: str | None = None
@@ -120,6 +129,7 @@ class DeployRequest(BaseModel):
     parallel: int = 4
     batch_size: int = 512
     ubatch_size: int = 128
+    cpu_kv_cache_gib: int = 8
 
 
 class PromptSet(BaseModel):
@@ -146,6 +156,8 @@ class BenchmarkRequest(BaseModel):
     requests: int = 1
     max_tokens: int = 128
     temperature: float = 0.0
+    benchmark_tool: str = "http_streaming"
+    disable_prompt_cache: bool = False
 
 
 class BenchmarkRecord(BaseModel):
@@ -362,3 +374,139 @@ class LlmDAutoscalingObservation(BaseModel):
     pending_pods: list[str] = Field(default_factory=list)
     node_count: int = 0
     policy: dict[str, int]
+
+
+# Lab 5 — hybrid model routing.  The OpenRouter credential is deliberately
+# separated from plan/status models so it is write-only at the API boundary.
+class LlmDRoutingPreflightRequest(BaseModel):
+    source_experiment_id: int = Field(ge=1)
+    context: str
+    namespace: str = "llm-d-lab"
+    monitoring_namespace: str = "llm-d-monitoring"
+    prometheus_service: str = "llmd-kube-prometheus-stack-prometheus"
+    grafana_service: str = "llmd-grafana"
+
+
+class LlmDRoutingConfiguration(BaseModel):
+    source_experiment_id: int = Field(ge=1)
+    context: str
+    namespace: str = "llm-d-lab"
+    # These are validated against the linked Lab 4 configuration on the server.
+    release_name: str = "llm-d-lab"
+    model: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    coding_model: str = "openai/gpt-4.1-mini"
+    reasoning_model: str = "deepseek/deepseek-r1"
+    # An empty value is resolved server-side to a name derived from the Lab 5
+    # experiment ID. This prevents two independent Lab 5 experiments from
+    # claiming the same Deployment, Service, Secret, or Grafana dashboard.
+    router_name: str = ""
+    monitoring_namespace: str = "llm-d-monitoring"
+    prometheus_service: str = "llmd-kube-prometheus-stack-prometheus"
+
+
+class LlmDRoutingDeployRequest(LlmDRoutingConfiguration):
+    openrouter_api_key: str = Field(min_length=1)
+    confirm: bool = False
+
+
+class LlmDRoutingAliasRoute(BaseModel):
+    alias: str
+    destination: str
+    model: str
+    max_tokens: int | None = None
+
+
+class LlmDRoutingPlan(BaseModel):
+    source_experiment_id: int
+    context: str
+    namespace: str
+    router_name: str
+    service_name: str
+    manifests: str
+    commands: list[list[str]]
+    aliases: list[LlmDRoutingAliasRoute]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LlmDRoutingDeployResult(BaseModel):
+    status: str
+    log_path: str | None = None
+    message: str
+    plan: LlmDRoutingPlan
+
+
+class LlmDRoutingStatus(BaseModel):
+    experiment_id: int
+    configured: bool
+    owned: bool
+    ready: bool
+    source_experiment_id: int | None = None
+    context: str | None = None
+    namespace: str | None = None
+    router_name: str | None = None
+    service_name: str | None = None
+    aliases: list[LlmDRoutingAliasRoute] = Field(default_factory=list)
+    message: str | None = None
+
+
+class LlmDRoutingEndpointStatus(BaseModel):
+    experiment_id: int
+    status: str
+    endpoint_url: str
+    healthy: bool
+    available_models: list[str] = Field(default_factory=list)
+    message: str | None = None
+
+
+class LlmDRoutingInferenceRequest(BaseModel):
+    model: str
+    prompt: str | None = None
+    messages: list[dict[str, str]] | None = None
+    max_tokens: int = Field(default=128, ge=1, le=4096)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    stream: bool = False
+
+
+class LlmDRoutingInferenceResult(BaseModel):
+    model: str
+    destination: str
+    response: dict[str, Any]
+    usage: dict[str, int] | None = None
+
+
+class LlmDRoutingBenchmarkRequest(BaseModel):
+    name: str = "hybrid-routing-benchmark"
+    model: str
+    prompt: str = "Explain how a cache-aware LLM router separates prefill from decode work."
+    prompt_set_id: int | None = None
+    concurrency: int = Field(default=1, ge=1, le=128)
+    requests: int = Field(default=8, ge=1, le=1000)
+    max_tokens: int = Field(default=128, ge=1, le=4096)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
+
+class LlmDRoutingBenchmarkResult(BaseModel):
+    endpoint_url: str
+    raw_path: str
+    summary_path: str
+    summary: dict[str, Any]
+    model: str
+    destination: str
+
+
+class LlmDRoutingBenchmarkRecord(BaseModel):
+    id: int
+    experiment_id: int
+    name: str
+    model: str
+    destination: str
+    raw_path: str
+    summary_path: str
+    created_at: str
+    summary: dict[str, Any]
+
+
+class LlmDRoutingUninstallResult(BaseModel):
+    status: str
+    log_path: str | None = None
+    message: str
