@@ -44,6 +44,22 @@ Start here:
 
 [labs/03-llm-d-on-oci-cpu-cluster/README.md](labs/03-llm-d-on-oci-cpu-cluster/README.md)
 
+### Lab 4: LLM-D Demand-Driven Autoscaling on OKE
+
+The fourth lab adds observability and demand-driven pod autoscaling to the Lab 3 LLM-D CPU vLLM deployment. It uses Prometheus, Grafana, KEDA, and LLM-D EPP demand metrics to show when inference load should add model-server replicas and when OKE Cluster Autoscaler may need to add managed-node capacity.
+
+Start here:
+
+[labs/04-llm-d-autoscaling-on-oke/README.md](labs/04-llm-d-autoscaling-on-oke/README.md)
+
+### Lab 5: Hybrid Model Routing on OKE
+
+The fifth lab adds an explicit model-routing layer in front of the Lab 4 deployment. A private LiteLLM router exposes one OpenAI-compatible endpoint with local aliases backed by LLM-D CPU vLLM and external aliases backed by OpenRouter, so participants can measure route split and local-versus-external behavior.
+
+Start here:
+
+[labs/05-hybrid-model-routing-on-oke/README.md](labs/05-hybrid-model-routing-on-oke/README.md)
+
 ## Apps
 
 ### OCI Inference Cloud
@@ -58,11 +74,23 @@ Follow the full lab guide:
 
 [docs/inference-cloud-lab-guide.md](docs/inference-cloud-lab-guide.md)
 
+Experiment types in the app:
+
+| Experiment type | Use it when | Main comparison |
+| --- | --- | --- |
+| OCI CPU instance | You want one compute instance and one local endpoint. | Model, engine, prompt shape, and concurrency. |
+| CPU shape comparison | You want two OCI CPU shapes with the same model and workload. | Shape-level latency and throughput. |
+| Lab 3 LLM-D cluster | You already have a CPU Kubernetes cluster. | LLM-D routing, replica count, CPU/memory, and vLLM settings. |
+| Lab 4 autoscaling | You want demand-driven scaling observations. | EPP queue/running-request demand, KEDA replicas, and OKE node capacity. |
+| Lab 5 hybrid routing | You have a ready Lab 4 experiment and want route analytics. | Local CPU aliases versus external model aliases. |
+
 ## Examples
 
 - [examples/direct-cpu-chat/README.md](examples/direct-cpu-chat/README.md): calls the generated CPU endpoint directly.
 - [examples/router-chat/README.md](examples/router-chat/README.md): routes simple requests to CPU inference and heavier requests to OpenAI.
 - [docs/cpu-inference-good-enough.md](docs/cpu-inference-good-enough.md): participant explainer for when CPU inference is enough.
+- [docs/cpu-inference-hackathon-proposal.md](docs/cpu-inference-hackathon-proposal.md): leadership proposal for a CPU inference routing hackathon.
+- [docs/cpu-inference-hackathon-proposal.docx](docs/cpu-inference-hackathon-proposal.docx): shareable Word version of the hackathon proposal.
 
 ## Repository Structure
 
@@ -86,6 +114,9 @@ llm-inference-lab/
 │   │   ├── observations.md
 │   │   ├── results_dashboard.html
 │   │   └── results/
+│   ├── 03-llm-d-on-oci-cpu-cluster/
+│   ├── 04-llm-d-autoscaling-on-oke/
+│   ├── 05-hybrid-model-routing-on-oke/
 │   └── templates/
 ├── notes/
 ├── results/

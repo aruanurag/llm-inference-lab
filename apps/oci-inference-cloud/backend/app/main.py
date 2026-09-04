@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -9,10 +11,11 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
-from . import autoscaling, endpoint, grafana_endpoint, llmd, llmd_endpoint, oci_cli, state
+from . import autoscaling, endpoint, grafana_endpoint, llmd, llmd_endpoint, oci_cli, routing, routing_endpoint, state
 from .benchmark import run_benchmark, write_benchmark_result
-from .config import BENCHMARKS_DIR, PROMPTS_DIR, ensure_app_dirs
-from .deploy import deploy_llama_cpp, list_deploy_models
+from .config import BENCHMARKS_DIR, LOGS_DIR, PROMPTS_DIR, ensure_app_dirs
+from .deploy import deploy_inference_engine, list_deploy_models, resolve_model
+from .native_benchmark import BENCHMARK_TOOLS, run_native_benchmark
 from .prompts import parse_prompt_file, read_prompt_set, seed_default_prompts
 from .schemas import (
     BenchmarkRecord,
@@ -49,6 +52,19 @@ from .schemas import (
     LlmDPlatformResult,
     LlmDPlatformStatus,
     LlmDPlan,
+    LlmDRoutingBenchmarkRecord,
+    LlmDRoutingBenchmarkRequest,
+    LlmDRoutingBenchmarkResult,
+    LlmDRoutingConfiguration,
+    LlmDRoutingDeployRequest,
+    LlmDRoutingDeployResult,
+    LlmDRoutingEndpointStatus,
+    LlmDRoutingInferenceRequest,
+    LlmDRoutingInferenceResult,
+    LlmDRoutingPlan,
+    LlmDRoutingPreflightRequest,
+    LlmDRoutingStatus,
+    LlmDRoutingUninstallResult,
     Option,
     Profile,
     PromptSet,
@@ -105,7 +121,15 @@ def experiments() -> list[ExperimentRecord]:
 def create_experiment(request: ExperimentCreate) -> ExperimentRecord:
     if not request.name.strip():
         raise HTTPException(status_code=400, detail="Experiment name is required.")
-    return ExperimentRecord(**state.insert_experiment(request.name.strip(), request.description.strip(), request.kind))
+    if request.kind == "llm-d-routing":
+        if not request.source_experiment_id:
+            raise HTTPException(status_code=400, detail="A Lab 5 routing experiment must link to a Lab 4 source experiment.")
+        source = state.get_experiment(request.source_experiment_id)
+        if source.get("kind") != "llm-d-autoscaling":
+            raise HTTPException(status_code=400, detail="Lab 5 can only link to a Lab 4 LLM-D autoscaling experiment.")
+    return ExperimentRecord(**state.insert_experiment(
+        request.name.strip(), request.description.strip(), request.kind, request.source_experiment_id,
+    ))
 
 
 @app.get("/api/kubernetes/contexts", response_model=list[KubernetesContext])
@@ -411,6 +435,415 @@ def list_llmd_benchmark_runs(experiment_id: int) -> list[LlmDBenchmarkRecord]:
     return [LlmDBenchmarkRecord(**item) for item in state.list_llmd_benchmarks(experiment_id)]
 
 
+# ---------------------------------------------------------------------------
+# Lab 5: hybrid LiteLLM routing.  These handlers intentionally use a linked
+# Lab 4 experiment as their immutable source of local EPP details; Lab 5 never
+# recreates, changes, or deletes the source model servers, KEDA policy, or
+# platform stack.
+
+def _routing_source_config(experiment_id: int, request_config: dict[str, Any]) -> dict[str, Any]:
+    experiment = state.get_experiment(experiment_id)
+    if experiment.get("kind") != "llm-d-routing":
+        raise RuntimeError("Create a Lab 5 hybrid routing experiment before configuring its router.")
+    stored_source_id = experiment.get("source_experiment_id")
+    requested_source_id = request_config.get("source_experiment_id")
+    if not stored_source_id:
+        raise RuntimeError("This Lab 5 experiment is not linked to a Lab 4 source experiment.")
+    if requested_source_id and requested_source_id != stored_source_id:
+        raise RuntimeError("The selected source does not match the Lab 4 experiment linked when this Lab 5 experiment was created.")
+
+    source = state.get_experiment(int(stored_source_id))
+    if source.get("kind") != "llm-d-autoscaling":
+        raise RuntimeError("The linked source is not a Lab 4 LLM-D autoscaling experiment.")
+    source_deployment = state.get_setting(f"llmd:{stored_source_id}")
+    if not source_deployment:
+        raise RuntimeError("The linked Lab 4 experiment has no deployed LLM-D configuration.")
+    if not source_deployment.get("enable_autoscaling"):
+        raise RuntimeError("Redeploy the linked Lab 4 LLM-D workload with monitoring and EPP Flow Control enabled before adding Lab 5 routing.")
+    platform = state.get_setting(f"lab4:{stored_source_id}")
+    if not platform:
+        raise RuntimeError("Bootstrap or attach the Lab 4 observability platform before adding Lab 5 routing.")
+
+    # Bound the router's private targets to the selected source.  We ignore
+    # client-supplied context/service/model values rather than letting a Lab 5
+    # UI field point a router at another workload.
+    config = dict(request_config)
+    # Preflight intentionally accepts a smaller payload than the plan/deploy
+    # forms. Alias model IDs do not affect source-cluster readiness, so use the
+    # same public defaults when they are absent.
+    config.setdefault("coding_model", "openai/gpt-4.1-mini")
+    config.setdefault("reasoning_model", "deepseek/deepseek-r1")
+    if not config.get("router_name"):
+        config["router_name"] = f"{routing.ROUTER_NAME}-{experiment_id}"
+    config.update({
+        "source_experiment_id": int(stored_source_id),
+        "context": source_deployment["context"],
+        "namespace": source_deployment["namespace"],
+        "release_name": source_deployment["release_name"],
+        "model": source_deployment["model"],
+        "monitoring_namespace": platform.get("monitoring_namespace", routing.MONITORING_NAMESPACE),
+        "prometheus_service": platform.get("prometheus_service", routing.PROMETHEUS_SERVICE),
+    })
+    return routing.validate_config(config, require_openrouter_key=bool(config.get("openrouter_api_key")))
+
+
+def _routing_kubectl_exists(config: dict[str, Any], *args: str) -> bool:
+    try:
+        result = llmd.command_output(llmd.kubectl(config["context"], *args), timeout=45)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _routing_epp_ready(config: dict[str, Any]) -> bool:
+    try:
+        result = llmd.command_output(
+            llmd.kubectl(config["context"], "-n", config["namespace"], "get", "endpoints", f"{config['release_name']}-epp", "-o", "json"),
+            timeout=45,
+        )
+        if result.returncode:
+            return False
+        endpoints = json.loads(result.stdout or "{}")
+        for subset in endpoints.get("subsets", []):
+            if subset.get("addresses"):
+                return True
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    return False
+
+
+def _routing_preflight(experiment_id: int, config: dict[str, Any]) -> dict[str, Any]:
+    source = state.get_experiment(config["source_experiment_id"])
+    source_deployment = state.get_setting(f"llmd:{config['source_experiment_id']}")
+    platform = state.get_setting(f"lab4:{config['source_experiment_id']}")
+    warnings = list(routing.preflight_manifest(config)["warnings"])
+    llmd.require_tool("kubectl")
+
+    epp_service_name = f"{config['release_name']}-epp"
+    epp_service = _routing_kubectl_exists(config, "-n", config["namespace"], "get", "service", epp_service_name)
+    epp_ready = _routing_epp_ready(config) if epp_service else False
+    service_monitor_crd = _routing_kubectl_exists(config, "get", "crd", "servicemonitors.monitoring.coreos.com")
+    prometheus_available = _routing_kubectl_exists(
+        config, "-n", config["monitoring_namespace"], "get", "service", config["prometheus_service"],
+    )
+    grafana_service = platform.get("grafana_service", "llmd-grafana") if platform else "llmd-grafana"
+    grafana_available = _routing_kubectl_exists(
+        config, "-n", config["monitoring_namespace"], "get", "service", grafana_service,
+    )
+    conflicts: list[dict[str, str]] = []
+    try:
+        platform_preflight = autoscaling.preflight(
+            config["context"], config["namespace"], config["release_name"], config["monitoring_namespace"],
+            config["prometheus_service"], grafana_service, platform.get("keda_namespace", autoscaling.KEDA_NAMESPACE) if platform else autoscaling.KEDA_NAMESPACE,
+        )
+        conflicts = platform_preflight.get("conflicting_releases", [])
+    except Exception:
+        # The route prerequisites above are specific, and useful even if Helm
+        # is not installed locally to inspect existing releases.
+        warnings.append("Could not inspect Helm releases for platform conflicts. No Helm resources will be installed by Lab 5.")
+
+    source_ready = bool(
+        source.get("kind") == "llm-d-autoscaling"
+        and source_deployment.get("enable_autoscaling")
+        and platform
+    )
+    if not source_ready:
+        warnings.append("The selected source does not have a complete Lab 4 monitored/autoscaling configuration.")
+    if not epp_service:
+        warnings.append(f"The linked Lab 4 EPP Service {epp_service_name!r} was not found in {config['namespace']!r}.")
+    elif not epp_ready:
+        warnings.append("The linked EPP Service has no ready endpoints yet. Wait for the LLM-D router and model pods to become Ready.")
+    if not service_monitor_crd:
+        warnings.append("The ServiceMonitor CRD is absent, so Prometheus cannot discover Lab 5 router metrics.")
+    if not prometheus_available:
+        warnings.append("The selected Lab 4 Prometheus Service is unavailable, so routing metrics and Grafana panels will be empty.")
+    if not grafana_available:
+        warnings.append("Grafana was not detected. The router can run, but the Lab 5 dashboard ConfigMap will not be visible until Grafana is available.")
+    warnings.append("External egress is not actively probed because that would require sending a credential. Coding and reasoning routes need cluster DNS and HTTPS egress to OpenRouter.")
+    return {
+        "source_experiment_id": config["source_experiment_id"],
+        "context": config["context"],
+        "namespace": config["namespace"],
+        "source_experiment_ready": source_ready,
+        "epp_service": epp_service_name if epp_service else None,
+        "epp_ready": epp_ready,
+        "prometheus_available": prometheus_available,
+        "grafana_available": grafana_available,
+        "service_monitor_crd": service_monitor_crd,
+        "egress_ready": None,
+        "conflicting_releases": conflicts,
+        "warnings": warnings,
+    }
+
+
+def _routing_plan_model(config: dict[str, Any]) -> LlmDRoutingPlan:
+    plan = routing.routing_plan(config)
+    # ``routing_plan`` is designed to be safe by construction; redact again at
+    # the boundary so a future renderer cannot accidentally leak an input key.
+    return LlmDRoutingPlan(**routing.redact({
+        "source_experiment_id": plan["source_experiment_id"],
+        "context": plan["context"],
+        "namespace": plan["namespace"],
+        "router_name": plan["router_name"],
+        "service_name": plan["service_name"],
+        "manifests": plan["manifests"],
+        "commands": plan["commands"],
+        "aliases": plan["aliases"],
+        "warnings": plan["warnings"],
+    }))
+
+
+def _routing_apply_command(
+    entries: list[str], command: list[str], *, input_text: str | None = None, hide_output: bool = False, timeout: int = 300,
+) -> None:
+    entries.append("$ " + " ".join(command))
+    result = llmd.command_output(command, input_text=input_text, timeout=timeout)
+    if result.returncode:
+        # Do not return kube API output for a Secret apply. It normally lacks
+        # data, but a generic failure is safer than treating that as a contract.
+        if hide_output:
+            raise RuntimeError("Could not apply the Lab 5 credential Secret.")
+        raise RuntimeError(result.stderr.strip() or f"Command failed with exit code {result.returncode}.")
+    if not hide_output:
+        entries.extend(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+    else:
+        entries.append("Applied Lab 5 credential Secret (contents redacted).")
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/preflight")
+def llmd_routing_preflight(experiment_id: int, request: LlmDRoutingPreflightRequest) -> dict[str, Any]:
+    try:
+        config = _routing_source_config(experiment_id, request.model_dump())
+        return _routing_preflight(experiment_id, config)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/plan", response_model=LlmDRoutingPlan)
+def plan_llmd_routing(experiment_id: int, request: LlmDRoutingConfiguration) -> LlmDRoutingPlan:
+    try:
+        config = _routing_source_config(experiment_id, request.model_dump())
+        return _routing_plan_model(config)
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/deploy", response_model=LlmDRoutingDeployResult)
+def deploy_llmd_routing(experiment_id: int, request: LlmDRoutingDeployRequest) -> LlmDRoutingDeployResult:
+    try:
+        if not request.confirm:
+            raise ValueError("Review the non-secret Lab 5 plan and confirm the Lab 5-owned changes before deploying.")
+        config = _routing_source_config(experiment_id, request.model_dump())
+        existing_config = state.get_setting(f"llmd-routing:{experiment_id}")
+        if (
+            existing_config
+            and existing_config.get("owned")
+            and existing_config.get("router_name") != config["router_name"]
+        ):
+            raise ValueError(
+                "Router name cannot change after this Lab 5 router is deployed. "
+                "Remove the existing Lab 5 router first, then deploy a new router name."
+            )
+        preflight = _routing_preflight(experiment_id, config)
+        missing = [
+            label for label, ready in (
+                ("the linked Lab 4 source", preflight["source_experiment_ready"]),
+                ("the LLM-D EPP Service", preflight["epp_ready"]),
+                ("the ServiceMonitor CRD", preflight["service_monitor_crd"]),
+                ("the Prometheus Service", preflight["prometheus_available"]),
+            ) if not ready
+        ]
+        if missing:
+            raise RuntimeError("Cannot deploy Lab 5 routing until " + ", ".join(missing) + " is ready. Review routing preflight for remediation.")
+
+        # A previously started companion proxy has the old in-memory master
+        # key. Stop it before rotating credentials; the user can start a fresh
+        # local-only endpoint after the rollout is Ready.
+        routing_endpoint.stop(experiment_id)
+        plan = routing.routing_plan(config)
+        master_key = routing.new_router_master_key()
+        secret = routing.secret_manifest(config, master_key)
+        # From this point the only configuration written to local state has the
+        # OpenRouter and internal master keys removed.
+        safe_config = routing.redact({key: value for key, value in config.items() if key != "openrouter_api_key"})
+        safe_config.update({
+            "owned": True,
+            "service_name": plan["service_name"],
+            "secret_name": plan["resource_names"]["secret"],
+            "dashboard_name": plan["resource_names"]["dashboard"],
+        })
+
+        log_path = LOGS_DIR / f"lab5-routing-{int(time.time())}.log"
+        entries: list[str] = []
+        try:
+            # Apply the Secret directly and never add its manifest or kubectl
+            # response to the plan/result/log. The next manifests contain only
+            # a Secret reference and are safe to render and retain.
+            _routing_apply_command(entries, plan["commands"][0], input_text=json.dumps(secret), hide_output=True)
+            _routing_apply_command(entries, plan["commands"][0], input_text=plan["manifest"])
+            _routing_apply_command(entries, plan["commands"][1], input_text=plan["dashboard_manifest"])
+            _routing_apply_command(entries, plan["commands"][2])
+            _routing_apply_command(entries, plan["commands"][3], timeout=240)
+            _routing_apply_command(entries, plan["commands"][4])
+        finally:
+            # ``secret`` and ``master_key`` are deliberately local variables;
+            # no log/setting/response below references either value.
+            log_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        state.set_setting(f"llmd-routing:{experiment_id}", safe_config)
+        state.update_experiment(experiment_id, status="lab5-routing-ready")
+        message = "Lab 5 router is Ready. Start the local endpoint to send explicit aliases through LiteLLM."
+        return LlmDRoutingDeployResult(status="ok", log_path=str(log_path), message=message, plan=_routing_plan_model(safe_config))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/routing", response_model=LlmDRoutingStatus)
+def llmd_routing_status(experiment_id: int) -> LlmDRoutingStatus:
+    try:
+        state.get_experiment(experiment_id)
+        config = state.get_setting(f"llmd-routing:{experiment_id}")
+        if not config or not config.get("owned"):
+            return LlmDRoutingStatus(experiment_id=experiment_id, configured=False, owned=False, ready=False)
+        plan = routing.routing_plan(config)
+        deployment_ready = False
+        service_ready = _routing_kubectl_exists(config, "-n", config["namespace"], "get", "service", plan["service_name"])
+        try:
+            result = llmd.command_output(
+                llmd.kubectl(config["context"], "-n", config["namespace"], "get", "deployment", plan["router_name"], "-o", "json"), timeout=45,
+            )
+            if result.returncode == 0:
+                deployment_ready = int(json.loads(result.stdout or "{}").get("status", {}).get("readyReplicas") or 0) >= 1
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            pass
+        message = None if deployment_ready and service_ready else "The Lab 5 router is recorded as owned but its Deployment or private Service is not Ready. Refresh or inspect the cluster before starting an endpoint."
+        return LlmDRoutingStatus(
+            experiment_id=experiment_id, configured=True, owned=True, ready=deployment_ready and service_ready,
+            source_experiment_id=config.get("source_experiment_id"), context=config.get("context"), namespace=config.get("namespace"),
+            router_name=plan["router_name"], service_name=plan["service_name"], aliases=plan["aliases"], message=message,
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/routing/endpoint", response_model=LlmDRoutingEndpointStatus)
+def llmd_routing_endpoint_status(experiment_id: int) -> LlmDRoutingEndpointStatus:
+    state.get_experiment(experiment_id)
+    return LlmDRoutingEndpointStatus(**routing_endpoint.status(experiment_id))
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/endpoint/start", response_model=LlmDRoutingEndpointStatus)
+def start_llmd_routing_endpoint(experiment_id: int) -> LlmDRoutingEndpointStatus:
+    try:
+        state.get_experiment(experiment_id)
+        return LlmDRoutingEndpointStatus(**routing_endpoint.start(experiment_id))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/endpoint/stop", response_model=LlmDRoutingEndpointStatus)
+def stop_llmd_routing_endpoint(experiment_id: int) -> LlmDRoutingEndpointStatus:
+    state.get_experiment(experiment_id)
+    return LlmDRoutingEndpointStatus(**routing_endpoint.stop(experiment_id))
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/inference", response_model=LlmDRoutingInferenceResult)
+def llmd_routing_inference(experiment_id: int, request: LlmDRoutingInferenceRequest) -> LlmDRoutingInferenceResult:
+    try:
+        state.get_experiment(experiment_id)
+        return LlmDRoutingInferenceResult(**routing_endpoint.chat(
+            experiment_id, alias=request.model, prompt=request.prompt, messages=request.messages,
+            max_tokens=request.max_tokens, temperature=request.temperature, stream=request.stream,
+        ))
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/benchmark", response_model=LlmDRoutingBenchmarkResult)
+async def benchmark_llmd_routing(experiment_id: int, request: LlmDRoutingBenchmarkRequest) -> LlmDRoutingBenchmarkResult:
+    try:
+        state.get_experiment(experiment_id)
+        route = routing.validate_inference_request(request.model, request.max_tokens)
+        endpoint_state = routing_endpoint.start(experiment_id)
+        prompt_set = state.get_prompt_set(request.prompt_set_id) if request.prompt_set_id else None
+        prompts = read_prompt_set(prompt_set["path"]) if prompt_set else [request.prompt]
+        prompts = [prompt.strip() for prompt in prompts if prompt.strip()]
+        if not prompts:
+            raise RuntimeError("Provide a prompt or select a CSV prompt set with at least one prompt.")
+        result = await run_benchmark(
+            url=f"{endpoint_state['endpoint_url']}/v1/chat/completions", model=request.model, prompts=prompts,
+            concurrency=request.concurrency, requests=request.requests, max_tokens=request.max_tokens, temperature=request.temperature,
+        )
+        config = routing_endpoint.deployment_config(experiment_id)
+        result["summary"].update({
+            "name": request.name,
+            "experiment_id": experiment_id,
+            "source_experiment_id": config.get("source_experiment_id"),
+            "deployment": "lab5-hybrid-routing",
+            "model": request.model,
+            "destination": route["destination"],
+            "namespace": config.get("namespace"),
+            "router_name": config.get("router_name"),
+            "prompt_set_id": request.prompt_set_id,
+            "prompt_set_name": prompt_set["name"] if prompt_set else "Custom prompt",
+        })
+        output_dir = BENCHMARKS_DIR / "llm-d-routing" / str(experiment_id)
+        raw_path, summary_path = write_benchmark_result(output_dir, request.name, result)
+        state.insert_llmd_routing_benchmark(
+            experiment_id, request.name, request.model, route["destination"], summary_path, raw_path, result["summary"],
+        )
+        if result["summary"]["successful_requests"] == 0:
+            raise RuntimeError("The routing benchmark reached no successful requests. The local result is retained outside Git for troubleshooting.")
+        state.update_experiment(experiment_id, status="lab5-routing-benchmarked")
+        return LlmDRoutingBenchmarkResult(
+            endpoint_url=endpoint_state["endpoint_url"], raw_path=str(raw_path), summary_path=str(summary_path), summary=result["summary"],
+            model=request.model, destination=route["destination"],
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
+@app.get("/api/experiments/{experiment_id}/llm-d/routing/benchmarks", response_model=list[LlmDRoutingBenchmarkRecord])
+def list_llmd_routing_benchmarks(experiment_id: int) -> list[LlmDRoutingBenchmarkRecord]:
+    state.get_experiment(experiment_id)
+    return [LlmDRoutingBenchmarkRecord(**item) for item in state.list_llmd_routing_benchmarks(experiment_id)]
+
+
+@app.post("/api/experiments/{experiment_id}/llm-d/routing/uninstall", response_model=LlmDRoutingUninstallResult)
+def uninstall_llmd_routing(experiment_id: int) -> LlmDRoutingUninstallResult:
+    try:
+        state.get_experiment(experiment_id)
+        config = state.get_setting(f"llmd-routing:{experiment_id}")
+        if not config or not config.get("owned"):
+            raise RuntimeError("This experiment did not create a Lab 5-owned router, so it cannot remove routing resources.")
+        routing_endpoint.stop(experiment_id)
+        names = routing.resource_names(config)
+        log_path = LOGS_DIR / f"lab5-routing-uninstall-{int(time.time())}.log"
+        entries: list[str] = []
+        commands = [
+            llmd.kubectl(config["context"], "-n", config["namespace"], "delete", "deployment", names["router"], "--ignore-not-found"),
+            llmd.kubectl(config["context"], "-n", config["namespace"], "delete", "service", names["router"], "--ignore-not-found"),
+            llmd.kubectl(config["context"], "-n", config["namespace"], "delete", "servicemonitor", names["router"], "--ignore-not-found"),
+            llmd.kubectl(config["context"], "-n", config["namespace"], "delete", "configmap", names["config_map"], "--ignore-not-found"),
+            llmd.kubectl(config["context"], "-n", config["monitoring_namespace"], "delete", "configmap", names["dashboard"], "--ignore-not-found"),
+            llmd.kubectl(config["context"], "-n", config["namespace"], "delete", "secret", names["secret"], "--ignore-not-found"),
+        ]
+        try:
+            for command in commands:
+                _routing_apply_command(entries, command)
+        finally:
+            log_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        state.set_setting(f"llmd-routing:{experiment_id}", {
+            "source_experiment_id": config.get("source_experiment_id"), "owned": False,
+        })
+        state.update_experiment(experiment_id, status="lab5-routing-removed")
+        return LlmDRoutingUninstallResult(
+            status="ok", log_path=str(log_path),
+            message="Removed only Lab 5-owned LiteLLM routing resources, its dashboard ConfigMap, and its credential Secret. The linked Lab 4 deployment was left intact.",
+        )
+    except Exception as exc:
+        raise api_error(exc) from exc
+
+
 @app.get("/api/experiments/{experiment_id}/export")
 def export_experiment(experiment_id: int) -> dict[str, Any]:
     experiment = state.get_experiment(experiment_id)
@@ -421,6 +854,10 @@ def export_experiment(experiment_id: int) -> dict[str, Any]:
         "instances": instances,
         "benchmarks": benchmarks,
         "llmd_benchmarks": state.list_llmd_benchmarks(experiment_id),
+        # Route benchmark metadata contains aggregate timings and local file
+        # paths only. It never exports router settings, prompt bodies,
+        # provider responses, or either credential.
+        "llmd_routing_benchmarks": state.list_llmd_routing_benchmarks(experiment_id),
         "endpoint": state.get_endpoint_session(experiment_id),
         "endpoint_analytics": state.endpoint_analytics(experiment_id),
         "exported_at": state.utc_now(),
@@ -627,8 +1064,8 @@ def instances() -> list[InstanceRecord]:
 
 
 @app.get("/api/deploy/models", response_model=list[DeployModelOption])
-def deploy_models() -> list[DeployModelOption]:
-    return [DeployModelOption(**item) for item in list_deploy_models()]
+def deploy_models(engine: str = "llama_cpp") -> list[DeployModelOption]:
+    return [DeployModelOption(**item) for item in list_deploy_models(engine)]
 
 
 @app.post("/api/instances/{instance_id}/deploy", response_model=DeployResult)
@@ -643,10 +1080,19 @@ def deploy(instance_id: int, request: DeployRequest | None = None) -> DeployResu
                 f"Instance is {state_text} and has no IP yet. Wait until it is RUNNING, then refresh state and deploy again."
             )
         deploy_config = (request or DeployRequest()).model_dump()
-        log_path, message = deploy_llama_cpp(instance_id, key["private_key_path"], instance["ssh_user"], host, deploy_config)
+        model = resolve_model(deploy_config)
+        log_path, message = deploy_inference_engine(instance_id, key["private_key_path"], instance["ssh_user"], host, deploy_config)
         status = "failed" if message.startswith("Deployment failed") else "ok"
         if status == "ok" and instance.get("experiment_id"):
             state.update_experiment(instance["experiment_id"], status="deployed")
+        if status == "ok":
+            state.update_instance(
+                instance_id,
+                inference_engine=deploy_config.get("engine") or "llama_cpp",
+                deployed_model_id=model["id"],
+                deployed_model_name=model["name"],
+                deployed_model_source=model["url"],
+            )
         return DeployResult(instance_id=instance_id, status=status, log_path=log_path, message=message)
     except Exception as exc:
         raise api_error(exc) from exc
@@ -689,24 +1135,54 @@ async def create_benchmark(request: BenchmarkRequest) -> BenchmarkRecord:
             state_text = instance.get("lifecycle_state") or "unknown"
             raise RuntimeError(f"Instance is {state_text} and has no IP yet. Wait until it is RUNNING before benchmarking.")
 
-        local_port = free_local_port()
-        tunnel = start_tunnel(key["private_key_path"], instance["ssh_user"], host, local_port)
-        try:
-            await asyncio.sleep(1.5)
-            result = await run_benchmark(
-                url=f"http://127.0.0.1:{local_port}/v1/chat/completions",
-                prompts=prompts,
-                concurrency=request.concurrency,
-                requests=request.requests,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-            )
-        finally:
-            tunnel.terminate()
+        if request.benchmark_tool == "http_streaming":
+            # This request-level setting is supported by llama.cpp.  It lets a
+            # benchmark keep model weights warm while preventing old prompt KV
+            # state from affecting a cold-prefill/TTFT trial.
+            cache_prompt = False if request.disable_prompt_cache and instance.get("inference_engine") == "llama_cpp" else None
+            local_port = free_local_port()
+            tunnel = start_tunnel(key["private_key_path"], instance["ssh_user"], host, local_port)
             try:
-                tunnel.wait(timeout=5)
-            except Exception:
-                tunnel.kill()
+                await asyncio.sleep(1.5)
+                result = await run_benchmark(
+                    url=f"http://127.0.0.1:{local_port}/v1/chat/completions",
+                    prompts=prompts,
+                    concurrency=request.concurrency,
+                    requests=request.requests,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    cache_prompt=cache_prompt,
+                )
+            finally:
+                tunnel.terminate()
+                try:
+                    tunnel.wait(timeout=5)
+                except Exception:
+                    tunnel.kill()
+        else:
+            cache_prompt = None
+            if request.benchmark_tool not in BENCHMARK_TOOLS:
+                raise RuntimeError(f"Unknown benchmark tool: {request.benchmark_tool}")
+            engine = instance.get("inference_engine")
+            if not engine:
+                raise RuntimeError("This instance has no recorded inference engine. Redeploy it from the engine-aware Deploy step before running a native benchmark.")
+            model_config = {"engine": engine, "model_id": instance.get("deployed_model_id")}
+            if instance.get("deployed_model_id") == "custom":
+                model_config.update({"custom_model_name": instance.get("deployed_model_name"), "custom_model_url": instance.get("deployed_model_source")})
+            model = resolve_model(model_config)
+            result = await asyncio.to_thread(
+                run_native_benchmark,
+                private_key_path=key["private_key_path"],
+                user=instance["ssh_user"],
+                host=host,
+                tool=request.benchmark_tool,
+                engine=engine,
+                model=model,
+                prompts=prompts,
+                requests=request.requests,
+                concurrency=request.concurrency,
+                max_tokens=request.max_tokens,
+            )
 
         experiment_id = request.experiment_id or instance.get("experiment_id")
         result["summary"]["name"] = request.name
@@ -715,6 +1191,12 @@ async def create_benchmark(request: BenchmarkRequest) -> BenchmarkRecord:
         result["summary"]["instance_display_name"] = instance["display_name"]
         result["summary"]["shape"] = instance["shape"]
         result["summary"]["shape_class"] = oci_cli.shape_class(instance["shape"])
+        result["summary"]["inference_engine"] = instance.get("inference_engine") or "llama_cpp"
+        result["summary"]["benchmark_tool"] = request.benchmark_tool
+        result["summary"]["benchmark_tool_label"] = BENCHMARK_TOOLS.get(request.benchmark_tool, "HTTP streaming")
+        result["summary"]["prompt_cache_mode"] = (
+            "disabled" if cache_prompt is False else "server default" if request.benchmark_tool == "http_streaming" and instance.get("inference_engine") == "llama_cpp" else "n/a"
+        )
         result["summary"]["preset_id"] = request.preset_id
         result["summary"]["preset_name"] = request.preset_name
         result["summary"]["preset_focus"] = request.preset_focus

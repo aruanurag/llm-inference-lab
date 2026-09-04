@@ -22,6 +22,7 @@ export type ExperimentRecord = {
   name: string;
   description: string;
   kind: "cpu-instance" | "llm-d-cluster" | "llm-d-autoscaling" | string;
+  source_experiment_id?: number | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -152,6 +153,165 @@ export type LlmDAutoscalingObservation = {
   policy: Record<string, number>;
 };
 
+/**
+ * Lab 5 accepts only these stable, user-facing model aliases.  The router
+ * resolves an alias to either the source Lab 4 LLM-D endpoint or OpenRouter;
+ * callers never send an arbitrary upstream model or URL.
+ */
+export type LlmDRoutingAlias = "private" | "fast" | "coding" | "reasoning";
+
+export type LlmDRoutingDestinationType = "llm-d" | "openrouter";
+
+/** A route exposed by the router plan/status response. */
+export type LlmDRoutingAliasRoute = {
+  alias: LlmDRoutingAlias;
+  destination: LlmDRoutingDestinationType;
+  model: string;
+  /** External aliases are capped at 512 tokens; local aliases are uncapped. */
+  max_tokens: number | null;
+};
+
+/** Preflight needs the same non-secret configuration used to render a plan. */
+export type LlmDRoutingPreflightRequest = LlmDRoutingConfiguration;
+
+export type LlmDRoutingPreflight = {
+  source_experiment_id: number;
+  context: string;
+  namespace: string;
+  source_experiment_ready: boolean;
+  epp_service: string | null;
+  epp_ready: boolean;
+  prometheus_available: boolean;
+  grafana_available: boolean;
+  service_monitor_crd: boolean;
+  egress_ready: boolean | null;
+  conflicting_releases: { name: string; namespace: string; chart: string }[];
+  warnings: string[];
+};
+
+/** Shared, non-secret routing configuration used for plan, status, and UI state. */
+export type LlmDRoutingConfiguration = {
+  source_experiment_id: number;
+  context: string;
+  namespace: string;
+  release_name: string;
+  model: string;
+  coding_model: string;
+  reasoning_model: string;
+  router_name?: string;
+};
+
+export type LlmDRoutingPlanRequest = LlmDRoutingConfiguration;
+
+/**
+ * The OpenRouter key is write-only: it is accepted only while deploying and
+ * must not appear in plan, status, result, or benchmark types.
+ */
+export type LlmDRoutingDeployRequest = LlmDRoutingConfiguration & {
+  openrouter_api_key: string;
+  confirm: boolean;
+};
+
+export type LlmDRoutingPlan = {
+  source_experiment_id: number;
+  context: string;
+  namespace: string;
+  router_name: string;
+  service_name: string;
+  manifests: string;
+  commands: string[][];
+  aliases: LlmDRoutingAliasRoute[];
+  warnings: string[];
+};
+
+export type LlmDRoutingDeployResult = {
+  status: string;
+  log_path?: string | null;
+  message: string;
+  plan: LlmDRoutingPlan;
+};
+
+/** Deliberately sanitized: this response contains no API key, endpoint host, or raw provider config. */
+export type LlmDRoutingStatus = {
+  experiment_id: number;
+  configured: boolean;
+  owned: boolean;
+  ready: boolean;
+  source_experiment_id?: number | null;
+  context?: string | null;
+  namespace?: string | null;
+  router_name?: string | null;
+  service_name?: string | null;
+  aliases: LlmDRoutingAliasRoute[];
+  message?: string | null;
+};
+
+export type LlmDRoutingEndpointStatus = {
+  experiment_id: number;
+  status: "stopped" | "starting" | "running" | "failed" | string;
+  endpoint_url: string;
+  healthy: boolean;
+  available_models: LlmDRoutingAlias[];
+  message?: string | null;
+};
+
+export type LlmDRoutingInferenceRequest = {
+  model: LlmDRoutingAlias;
+  prompt?: string;
+  messages?: Array<{
+    role: "system" | "user" | "assistant";
+    content: string;
+  }>;
+  max_tokens: number;
+  temperature: number;
+  stream?: boolean;
+};
+
+export type LlmDRoutingInferenceResult = {
+  model: LlmDRoutingAlias;
+  destination: LlmDRoutingDestinationType;
+  response: Record<string, unknown>;
+  usage?: Record<string, number> | null;
+};
+
+export type LlmDRoutingBenchmarkRequest = {
+  name: string;
+  model: LlmDRoutingAlias;
+  prompt?: string;
+  prompt_set_id?: number | null;
+  concurrency: number;
+  requests: number;
+  max_tokens: number;
+  temperature: number;
+};
+
+export type LlmDRoutingBenchmarkResult = {
+  endpoint_url: string;
+  raw_path: string;
+  summary_path: string;
+  summary: Record<string, unknown>;
+  model: LlmDRoutingAlias;
+  destination: LlmDRoutingDestinationType;
+};
+
+export type LlmDRoutingBenchmarkRecord = {
+  id: number;
+  experiment_id: number;
+  name: string;
+  model: LlmDRoutingAlias;
+  destination: LlmDRoutingDestinationType;
+  raw_path: string;
+  summary_path: string;
+  created_at: string;
+  summary: Record<string, unknown>;
+};
+
+export type LlmDRoutingUninstallResult = {
+  status: string;
+  log_path?: string | null;
+  message: string;
+};
+
 export type InstanceRecord = {
   id: number;
   experiment_id?: number | null;
@@ -167,6 +327,10 @@ export type InstanceRecord = {
   ssh_user: string;
   public_ip?: string | null;
   private_ip?: string | null;
+  inference_engine?: string | null;
+  deployed_model_id?: string | null;
+  deployed_model_name?: string | null;
+  deployed_model_source?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -181,6 +345,7 @@ export type DeployModelOption = {
   recommended_ocpus: number;
   recommended_memory_gbs: number;
   description: string;
+  engine: string;
 };
 
 export type PromptSet = {

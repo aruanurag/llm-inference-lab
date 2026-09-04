@@ -55,6 +55,7 @@ def post_streaming_request(
     max_tokens: int,
     temperature: float,
     model: str = "local-model",
+    cache_prompt: bool | None = None,
 ) -> RequestMetrics:
     payload = {
         "model": model,
@@ -63,6 +64,11 @@ def post_streaming_request(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    # llama-server defaults to prompt caching.  Keep the field absent unless
+    # the caller explicitly needs a cache-cold measurement so other
+    # OpenAI-compatible servers retain their normal request behavior.
+    if cache_prompt is not None:
+        payload["cache_prompt"] = cache_prompt
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -126,6 +132,7 @@ async def run_benchmark(
     max_tokens: int,
     temperature: float,
     model: str = "local-model",
+    cache_prompt: bool | None = None,
 ) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -141,6 +148,7 @@ async def run_benchmark(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 model=model,
+                cache_prompt=cache_prompt,
             )
 
     results = await asyncio.gather(*[one(i + 1) for i in range(max(requests, concurrency))])
@@ -157,6 +165,7 @@ async def run_benchmark(
         "concurrency": concurrency,
         "prompt_count": len(prompts),
         "max_tokens": max_tokens,
+        "request_cache_prompt": cache_prompt,
         "wall_seconds": wall_seconds,
         "requests_per_second": sum(1 for result in results if result.status == "ok") / wall_seconds if wall_seconds > 0 else 0,
         "output_chars": output_chars,

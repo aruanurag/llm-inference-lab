@@ -419,6 +419,16 @@ header p,
   margin-top: 8px;
 }
 
+.comparison-runner {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  margin: 0 0 14px;
+}
+
+.comparison-runner button {
+  white-space: nowrap;
+}
+
 .readiness-grid,
 .handoff-grid {
   display: grid;
@@ -623,7 +633,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   min-height: 38px;
   width: 100%;
   border: 1px solid var(--line);
@@ -631,6 +642,12 @@ select {
   padding: 0 10px;
   color: var(--text);
   background: white;
+}
+
+textarea {
+  min-height: 92px;
+  padding: 10px;
+  resize: vertical;
 }
 
 input[type="checkbox"] {
@@ -647,7 +664,8 @@ input[type="checkbox"] {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: 2px solid rgba(47, 111, 159, 0.18);
   border-color: #87acc8;
 }
@@ -750,6 +768,14 @@ th {
   .readiness-grid,
   .handoff-grid {
     grid-template-columns: 1fr;
+  }
+
+  .comparison-runner {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .comparison-runner button {
+    grid-column: 1 / -1;
   }
 
   .endpoint-card {

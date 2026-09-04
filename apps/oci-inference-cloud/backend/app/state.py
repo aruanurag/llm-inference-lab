@@ -34,6 +34,7 @@ def init_db() -> None:
               name text not null,
               description text not null default '',
               kind text not null default 'cpu-instance',
+              source_experiment_id integer,
               status text not null default 'setup',
               created_at text not null,
               updated_at text not null
@@ -63,6 +64,10 @@ def init_db() -> None:
               ssh_user text not null,
               public_ip text,
               private_ip text,
+              inference_engine text,
+              deployed_model_id text,
+              deployed_model_name text,
+              deployed_model_source text,
               created_at text not null,
               updated_at text not null
             );
@@ -122,11 +127,31 @@ def init_db() -> None:
               summary_json text not null,
               created_at text not null
             );
+
+            create table if not exists llmd_routing_benchmarks (
+              id integer primary key autoincrement,
+              experiment_id integer not null,
+              name text not null,
+              model text not null,
+              destination text not null,
+              summary_path text not null,
+              raw_path text not null,
+              summary_json text not null,
+              created_at text not null
+            );
             """
         )
         columns = {row["name"] for row in db.execute("pragma table_info(instances)").fetchall()}
         if "experiment_id" not in columns:
             db.execute("alter table instances add column experiment_id integer")
+        if "inference_engine" not in columns:
+            db.execute("alter table instances add column inference_engine text")
+        if "deployed_model_id" not in columns:
+            db.execute("alter table instances add column deployed_model_id text")
+        if "deployed_model_name" not in columns:
+            db.execute("alter table instances add column deployed_model_name text")
+        if "deployed_model_source" not in columns:
+            db.execute("alter table instances add column deployed_model_source text")
         columns = {row["name"] for row in db.execute("pragma table_info(benchmarks)").fetchall()}
         if "experiment_id" not in columns:
             db.execute("alter table benchmarks add column experiment_id integer")
@@ -136,6 +161,8 @@ def init_db() -> None:
         columns = {row["name"] for row in db.execute("pragma table_info(experiments)").fetchall()}
         if "kind" not in columns:
             db.execute("alter table experiments add column kind text not null default 'cpu-instance'")
+        if "source_experiment_id" not in columns:
+            db.execute("alter table experiments add column source_experiment_id integer")
 
 
 def set_setting(key: str, value: dict[str, Any]) -> None:
@@ -167,12 +194,17 @@ def percentile(values: list[float], pct: float) -> float | None:
     return ordered[index]
 
 
-def insert_experiment(name: str, description: str = "", kind: str = "cpu-instance") -> dict[str, Any]:
+def insert_experiment(
+    name: str,
+    description: str = "",
+    kind: str = "cpu-instance",
+    source_experiment_id: int | None = None,
+) -> dict[str, Any]:
     now = utc_now()
     with connect() as db:
         cursor = db.execute(
-            "insert into experiments(name, description, kind, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?)",
-            (name, description, kind, "setup", now, now),
+            "insert into experiments(name, description, kind, source_experiment_id, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+            (name, description, kind, source_experiment_id, "setup", now, now),
         )
         row = db.execute("select * from experiments where id = ?", (cursor.lastrowid,)).fetchone()
     return row_to_dict(row)
@@ -442,6 +474,46 @@ def list_llmd_benchmarks(experiment_id: int) -> list[dict[str, Any]]:
                 continue
     with connect() as db:
         rows = db.execute("select * from llmd_benchmarks where experiment_id = ? order by created_at desc", (experiment_id,)).fetchall()
+    results = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["summary"] = json.loads(item.pop("summary_json"))
+        results.append(item)
+    return results
+
+
+def insert_llmd_routing_benchmark(
+    experiment_id: int,
+    name: str,
+    model: str,
+    destination: str,
+    summary_path: Path,
+    raw_path: Path,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist only benchmark metadata and aggregates, never prompts or provider credentials."""
+    created_at = utc_now()
+    with connect() as db:
+        cursor = db.execute(
+            """
+            insert into llmd_routing_benchmarks(
+              experiment_id, name, model, destination, summary_path, raw_path, summary_json, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (experiment_id, name, model, destination, str(summary_path), str(raw_path), json.dumps(summary), created_at),
+        )
+        row = db.execute("select * from llmd_routing_benchmarks where id = ?", (cursor.lastrowid,)).fetchone()
+    item = row_to_dict(row)
+    item["summary"] = json.loads(item.pop("summary_json"))
+    return item
+
+
+def list_llmd_routing_benchmarks(experiment_id: int) -> list[dict[str, Any]]:
+    with connect() as db:
+        rows = db.execute(
+            "select * from llmd_routing_benchmarks where experiment_id = ? order by created_at desc",
+            (experiment_id,),
+        ).fetchall()
     results = []
     for row in rows:
         item = row_to_dict(row)

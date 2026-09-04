@@ -1,4 +1,4 @@
-import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDAutoscalingObservation, LlmDAutoscalingPlan, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDGrafanaStatus, LlmDPlan, LlmDPlatformPlan, LlmDPlatformPreflight, LlmDPlatformStatus, Option, Profile, PromptSet, SshKeyRecord } from "./types";
+import type { BenchmarkRecord, ClusterValidation, DeployModelOption, EndpointStatus, ExperimentRecord, InstanceRecord, KubernetesContext, LlmDAutoscalingObservation, LlmDAutoscalingPlan, LlmDBenchmarkRecord, LlmDBenchmarkResult, LlmDCheckout, LlmDEndpointStatus, LlmDGrafanaStatus, LlmDPlan, LlmDPlatformPlan, LlmDPlatformPreflight, LlmDPlatformStatus, LlmDRoutingBenchmarkRecord, LlmDRoutingBenchmarkRequest, LlmDRoutingBenchmarkResult, LlmDRoutingDeployRequest, LlmDRoutingDeployResult, LlmDRoutingEndpointStatus, LlmDRoutingInferenceRequest, LlmDRoutingInferenceResult, LlmDRoutingPlan, LlmDRoutingPlanRequest, LlmDRoutingPreflight, LlmDRoutingPreflightRequest, LlmDRoutingStatus, LlmDRoutingUninstallResult, Option, Profile, PromptSet, SshKeyRecord } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -20,7 +20,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   profiles: () => request<Profile[]>("/api/profiles"),
   experiments: () => request<ExperimentRecord[]>("/api/experiments"),
-  createExperiment: (payload: { name: string; description: string; kind?: string }) =>
+  createExperiment: (payload: { name: string; description: string; kind?: string; source_experiment_id?: number }) =>
     request<ExperimentRecord>("/api/experiments", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   exportExperiment: (experimentId: number) => request<Record<string, unknown>>(`/api/experiments/${experimentId}/export`),
   deleteExperimentInfra: (experimentId: number) =>
@@ -62,6 +62,25 @@ export const api = {
   deployLlmDAutoscaling: (experimentId: number, payload: Record<string, unknown>) =>
     request<{ status: string; log_path: string; message: string; plan: LlmDAutoscalingPlan }>(`/api/experiments/${experimentId}/llm-d/autoscaling/deploy`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   llmdAutoscalingObservation: (experimentId: number) => request<LlmDAutoscalingObservation>(`/api/experiments/${experimentId}/llm-d/autoscaling/observation`),
+  llmdRoutingPreflight: (experimentId: number, payload: LlmDRoutingPreflightRequest) =>
+    request<LlmDRoutingPreflight>(`/api/experiments/${experimentId}/llm-d/routing/preflight`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  planLlmDRouting: (experimentId: number, payload: LlmDRoutingPlanRequest) =>
+    request<LlmDRoutingPlan>(`/api/experiments/${experimentId}/llm-d/routing/plan`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  deployLlmDRouting: (experimentId: number, payload: LlmDRoutingDeployRequest) =>
+    request<LlmDRoutingDeployResult>(`/api/experiments/${experimentId}/llm-d/routing/deploy`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdRoutingStatus: (experimentId: number) => request<LlmDRoutingStatus>(`/api/experiments/${experimentId}/llm-d/routing`),
+  llmdRoutingEndpoint: (experimentId: number) => request<LlmDRoutingEndpointStatus>(`/api/experiments/${experimentId}/llm-d/routing/endpoint`),
+  startLlmDRoutingEndpoint: (experimentId: number) =>
+    request<LlmDRoutingEndpointStatus>(`/api/experiments/${experimentId}/llm-d/routing/endpoint/start`, { method: "POST" }),
+  stopLlmDRoutingEndpoint: (experimentId: number) =>
+    request<LlmDRoutingEndpointStatus>(`/api/experiments/${experimentId}/llm-d/routing/endpoint/stop`, { method: "POST" }),
+  inferLlmDRouting: (experimentId: number, payload: LlmDRoutingInferenceRequest) =>
+    request<LlmDRoutingInferenceResult>(`/api/experiments/${experimentId}/llm-d/routing/inference`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  benchmarkLlmDRouting: (experimentId: number, payload: LlmDRoutingBenchmarkRequest) =>
+    request<LlmDRoutingBenchmarkResult>(`/api/experiments/${experimentId}/llm-d/routing/benchmark`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  llmdRoutingBenchmarks: (experimentId: number) => request<LlmDRoutingBenchmarkRecord[]>(`/api/experiments/${experimentId}/llm-d/routing/benchmarks`),
+  uninstallLlmDRouting: (experimentId: number) =>
+    request<LlmDRoutingUninstallResult>(`/api/experiments/${experimentId}/llm-d/routing/uninstall`, { method: "POST" }),
   context: (payload: { profile: string; region?: string | null; compartment_id?: string | null }) =>
     request("/api/context", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   compartments: () => request<Option[]>("/api/compartments"),
@@ -79,7 +98,7 @@ export const api = {
   createSshKey: (name: string) => request<SshKeyRecord>("/api/ssh-keys", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ name }) }),
   instances: () => request<InstanceRecord[]>("/api/instances"),
   createInstance: (payload: Record<string, unknown>) => request<InstanceRecord>("/api/instances", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
-  deployModels: () => request<DeployModelOption[]>("/api/deploy/models"),
+  deployModels: (engine = "llama_cpp") => request<DeployModelOption[]>(`/api/deploy/models?${new URLSearchParams({ engine })}`),
   deploy: (instanceId: number, payload: Record<string, unknown>) =>
     request<{ status: string; message: string; log_path: string }>(`/api/instances/${instanceId}/deploy`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   prompts: () => request<PromptSet[]>("/api/prompts"),
