@@ -145,6 +145,19 @@ def deployment_script(config: dict[str, Any] | None = None) -> str:
     parallel = int(config.get("parallel") or 4)
     batch_size = int(config.get("batch_size") or 512)
     ubatch_size = int(config.get("ubatch_size") or 128)
+    threads = int(config["threads"]) if config.get("threads") else None
+    threads_batch = int(config["threads_batch"]) if config.get("threads_batch") else None
+    if threads is not None and threads < 1:
+        raise ValueError("Generation CPU threads must be at least 1.")
+    if threads_batch is not None and threads_batch < 1:
+        raise ValueError("Prefill CPU threads must be at least 1.")
+    thread_args = " ".join(
+        part for part in [
+            f"--threads {threads}" if threads is not None else "",
+            f"--threads-batch {threads_batch}" if threads_batch is not None else "",
+        ] if part
+    )
+    thread_label = f"generation={threads if threads is not None else 'auto'}, prefill={threads_batch if threads_batch is not None else 'auto'}"
 
     if build_native:
         cmake_flags = ["-DGGML_NATIVE=ON"]
@@ -215,6 +228,7 @@ def deployment_script(config: dict[str, Any] | None = None) -> str:
         fi
 
         echo "[6/7] Starting llama-server on remote localhost"
+        echo "llama.cpp CPU threads: {thread_label}"
         if [ -f "$HOME/oci-inference-cloud/logs/llama-server.pid" ]; then
           kill "$(cat "$HOME/oci-inference-cloud/logs/llama-server.pid")" >/dev/null 2>&1 || true
           rm -f "$HOME/oci-inference-cloud/logs/llama-server.pid"
@@ -227,6 +241,7 @@ def deployment_script(config: dict[str, Any] | None = None) -> str:
           --parallel {parallel} \
           --batch-size {batch_size} \
           --ubatch-size {ubatch_size} \
+          {thread_args} \
           > "$HOME/oci-inference-cloud/logs/llama-server.log" 2>&1 &
         echo "$!" > "$HOME/oci-inference-cloud/logs/llama-server.pid"
 
@@ -345,6 +360,8 @@ def deploy_llama_cpp(
             f"parallel={int(config.get('parallel') or 4)}",
             f"batch_size={int(config.get('batch_size') or 512)}",
             f"ubatch_size={int(config.get('ubatch_size') or 128)}",
+            f"threads={config.get('threads') or 'auto'}",
+            f"threads_batch={config.get('threads_batch') or 'auto'}",
             "--- stdout ---",
             result.stdout,
             "--- stderr ---",

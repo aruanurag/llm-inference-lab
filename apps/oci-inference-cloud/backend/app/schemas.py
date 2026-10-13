@@ -129,6 +129,10 @@ class DeployRequest(BaseModel):
     parallel: int = 4
     batch_size: int = 512
     ubatch_size: int = 128
+    # Omit both to retain llama.cpp's topology-aware automatic selection.
+    # Specify them to make CPU scaling trials reproducible.
+    threads: int | None = Field(default=None, ge=1, le=1024)
+    threads_batch: int | None = Field(default=None, ge=1, le=1024)
     cpu_kv_cache_gib: int = 8
 
 

@@ -23,6 +23,7 @@ This app is intentionally local-first:
 | --- | --- | --- | --- |
 | **OCI CPU instance** | You want the simplest path from OCI compute to a local OpenAI-compatible endpoint. | One OCI CPU/HPC instance with `llama.cpp` or CPU `vLLM`, reachable through SSH tunnel/local proxy. | Model size, quantization, engine, prompt shape, concurrency, and deploy settings. |
 | **CPU shape comparison** | You want to compare two OCI CPU shapes under the same workload. | Two OCI CPU instances with the same model and serving settings. | Shape-level latency, TTFT, approximate ITL, requests/sec, and approximate tokens/sec. |
+| **Bare-metal CPU comparison** | You want a fixed-capacity, whole-host comparison or need to rule out shared-VM host interference. | Two OCI `BM.*` CPU shapes with the same image, model, engine, and serving settings. | Cold-prefill TTFT, native prompt/decode token throughput, CPU-thread scaling, and concurrent-serving saturation. |
 | **Lab 3 · LLM-D on existing CPU cluster** | You already have an OCI Kubernetes cluster and want Kubernetes-native inference routing. | LLM-D EPP plus CPU vLLM model-server replicas in a selected namespace. | Replica count, CPU/memory per replica, KV cache, model length, prefix caching, and vLLM scheduler settings. |
 | **Lab 4 · LLM-D autoscaling and observability** | You want to observe demand-driven scale-out and dashboards. | Lab 3 deployment plus optional lab-owned Prometheus/Grafana/KEDA or validation of existing platform services. | EPP queue depth, running requests, KEDA desired replicas, Ready/Pending pods, node count, TTFT, and throughput. |
 | **Lab 5 · Hybrid LLM-D model routing** | You have a ready Lab 4 experiment and want explicit local-versus-external model routing. | Lab 5-owned LiteLLM router as a private `ClusterIP` Service linked to the Lab 4 EPP path and OpenRouter. | Route split, local CPU alias behavior, external alias latency/errors, and which traffic can drive local autoscaling. |
@@ -144,6 +145,25 @@ Open **Advanced settings** during deploy to switch from the portable llama.cpp b
 Use this when you want llama.cpp to compile for the selected shape's available CPU features. The portable default is safer for first deploys across different shapes.
 
 If native mode fails with `unsupported instruction 'vpdpbusd'`, keep native mode enabled but also enable **Disable VNNI instructions** in Advanced settings.
+
+### Bare-metal CPU comparisons and thread sweeps
+
+Choose **Bare-metal CPU comparison** when both sides of the experiment are fixed-capacity `BM.*` shapes. The provision form intentionally hides OCPU and memory controls: OCI determines those values from the selected SKU and the app never sends a Flex `shape-config` to bare metal.
+
+For `BM.Standard.E6.Ax.192`, start with `llama.cpp`, Qwen2.5 7B Instruct Q4_K_M, context 4096, parallel slots 1, batch 512, and micro-batch 128. In Advanced settings, the two explicit CPU fields map directly to llama.cpp:
+
+- **Generation CPU threads** → `llama-server --threads`
+- **Prefill CPU threads** → `llama-server --threads-batch`
+
+Leave them blank to use llama.cpp's automatic topology-aware selection. For a controlled thread sweep, set both values to each of `16`, `32`, `64`, `96`, and `192`; redeploy before every value. Each benchmark record stores the deployed thread settings, so exports retain the context of the result.
+
+Use these presets in order:
+
+1. **Bare metal · cold long prefill** — HTTP streaming; prompt cache disabled; compare TTFT p95 at each thread count.
+2. **Bare metal · native prompt and decode** — select `llama-bench`; five repetitions; compare prompt and decode tok/s without HTTP or prompt-cache effects.
+3. **Bare metal · serving saturation** — HTTP streaming; use the best single-request thread setting; compare requests/sec, TTFT p95, latency p95, and output tok/s at concurrency 8.
+
+`Parallel slots` is request-admission capacity, not the number of CPU worker threads. A single slot can still use the configured generation or prefill thread pool.
 
 ## Benchmark Comparison Presets
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.deploy import list_deploy_models, resolve_model, vllm_cpu_deployment_script
+from app.deploy import deployment_script, list_deploy_models, resolve_model, vllm_cpu_deployment_script
 from app.native_benchmark import _native_summary, native_benchmark_script, recommended_tool
 
 
@@ -28,13 +28,27 @@ def test_vllm_cpu_script_uses_local_only_server_and_cpu_configuration() -> None:
     assert "--max-model-len 2048 --max-num-seqs 3" in script
 
 
+def test_llama_cpp_thread_controls_render_for_reproducible_cpu_sweeps() -> None:
+    script = deployment_script({"threads": 32, "threads_batch": 64})
+
+    assert "--threads 32" in script
+    assert "--threads-batch 64" in script
+    assert "generation=32, prefill=64" in script
+
+
 def test_native_tools_match_the_engine_and_render_without_remote_addresses() -> None:
     llama = resolve_model({"engine": "llama_cpp", "model_id": "qwen2.5-1.5b-q4_k_m"})
     vllm = resolve_model({"engine": "vllm_cpu", "model_id": "qwen2.5-1.5b-instruct"})
 
     assert recommended_tool("llama_cpp") == "llama_bench"
     assert recommended_tool("vllm_cpu") == "vllm_bench_serve"
-    assert "llama-bench" in native_benchmark_script(tool="llama_bench", model=llama, prompt_tokens=100, max_tokens=32, requests=3, concurrency=1)
+    llama_bench = native_benchmark_script(
+        tool="llama_bench", model=llama, prompt_tokens=100, max_tokens=32,
+        requests=3, concurrency=1, threads=32, threads_batch=64,
+    )
+    assert "llama-bench" in llama_bench
+    assert "-t 32" in llama_bench
+    assert "-tb 64" not in llama_bench
     assert "vllm\" bench serve" in native_benchmark_script(tool="vllm_bench_serve", model=vllm, prompt_tokens=100, max_tokens=32, requests=3, concurrency=2)
 
 
