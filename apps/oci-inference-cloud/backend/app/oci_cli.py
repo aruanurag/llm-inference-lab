@@ -215,8 +215,13 @@ def list_images(compartment_id: str | None = None, shape: str | None = None) -> 
 
 
 def launch_instance(payload: dict[str, Any], public_key: str) -> dict[str, Any]:
-    if payload["shape"].endswith(".Flex") and (not payload.get("ocpus") or not payload.get("memory_gbs")):
+    is_flex_shape = payload["shape"].endswith(".Flex")
+    if is_flex_shape and (not payload.get("ocpus") or not payload.get("memory_gbs")):
         raise OciCliError("Flexible shapes require OCPUs and Memory GB. For a small CPU model test, start with 4 OCPUs and 32 GB.")
+    if not is_flex_shape and (payload.get("ocpus") is not None or payload.get("memory_gbs") is not None):
+        raise OciCliError(
+            f"{payload['shape']} has fixed capacity. Leave OCPUs and Memory GB empty; OCI does not accept a shape-config for this SKU."
+        )
 
     metadata = json.dumps({"ssh_authorized_keys": public_key})
     command = [
@@ -242,7 +247,7 @@ def launch_instance(payload: dict[str, Any], public_key: str) -> dict[str, Any]:
         "--boot-volume-size-in-gbs",
         str(payload.get("boot_volume_size_gbs", 100)),
     ]
-    if payload.get("ocpus") and payload.get("memory_gbs"):
+    if is_flex_shape and payload.get("ocpus") and payload.get("memory_gbs"):
         command.extend(
             [
                 "--shape-config",

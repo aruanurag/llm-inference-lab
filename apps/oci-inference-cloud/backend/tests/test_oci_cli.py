@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.oci_cli import build_base_command, parse_profiles
+import pytest
+
+from app.oci_cli import OciCliError, build_base_command, launch_instance, parse_profiles
 
 
 def test_parse_profiles_reads_default_and_named_profile(tmp_path: Path) -> None:
@@ -37,3 +39,15 @@ def test_build_base_command_accepts_explicit_profile_and_region() -> None:
         "--region",
         "us-ashburn-1",
     ]
+
+
+def test_bare_metal_rejects_stale_flex_shape_configuration() -> None:
+    with pytest.raises(OciCliError, match="fixed capacity"):
+        launch_instance(
+            {
+                "shape": "BM.Standard.E6.Ax.192",
+                "ocpus": 8,
+                "memory_gbs": 64,
+            },
+            "ssh-ed25519 AAAA test",
+        )

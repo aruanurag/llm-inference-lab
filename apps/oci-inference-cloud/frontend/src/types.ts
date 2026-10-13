@@ -21,7 +21,7 @@ export type ExperimentRecord = {
   id: number;
   name: string;
   description: string;
-  kind: "cpu-instance" | "llm-d-cluster" | "llm-d-autoscaling" | string;
+  kind: "cpu-instance" | "cpu-shape-comparison" | "bare-metal-shape-comparison" | "llm-d-cluster" | "llm-d-autoscaling" | string;
   source_experiment_id?: number | null;
   status: string;
   created_at: string;

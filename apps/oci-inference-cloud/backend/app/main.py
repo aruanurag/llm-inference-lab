@@ -1093,6 +1093,9 @@ def deploy(instance_id: int, request: DeployRequest | None = None) -> DeployResu
                 deployed_model_name=model["name"],
                 deployed_model_source=model["url"],
             )
+            # These settings contain no credentials and make a later thread
+            # sweep reproducible even after the browser has been refreshed.
+            state.set_setting(f"deploy:{instance_id}", deploy_config)
         return DeployResult(instance_id=instance_id, status=status, log_path=log_path, message=message)
     except Exception as exc:
         raise api_error(exc) from exc
@@ -1170,6 +1173,7 @@ async def create_benchmark(request: BenchmarkRequest) -> BenchmarkRecord:
             if instance.get("deployed_model_id") == "custom":
                 model_config.update({"custom_model_name": instance.get("deployed_model_name"), "custom_model_url": instance.get("deployed_model_source")})
             model = resolve_model(model_config)
+            deployed_config = state.get_setting(f"deploy:{request.instance_id}")
             result = await asyncio.to_thread(
                 run_native_benchmark,
                 private_key_path=key["private_key_path"],
@@ -1182,6 +1186,8 @@ async def create_benchmark(request: BenchmarkRequest) -> BenchmarkRecord:
                 requests=request.requests,
                 concurrency=request.concurrency,
                 max_tokens=request.max_tokens,
+                threads=deployed_config.get("threads"),
+                threads_batch=deployed_config.get("threads_batch"),
             )
 
         experiment_id = request.experiment_id or instance.get("experiment_id")
@@ -1194,6 +1200,16 @@ async def create_benchmark(request: BenchmarkRequest) -> BenchmarkRecord:
         result["summary"]["inference_engine"] = instance.get("inference_engine") or "llama_cpp"
         result["summary"]["benchmark_tool"] = request.benchmark_tool
         result["summary"]["benchmark_tool_label"] = BENCHMARK_TOOLS.get(request.benchmark_tool, "HTTP streaming")
+        deployed_config = state.get_setting(f"deploy:{request.instance_id}")
+        if deployed_config:
+            result["summary"]["deployment_settings"] = {
+                key: deployed_config.get(key)
+                for key in (
+                    "engine", "model_id", "build_native", "disable_vnni", "ctx_size", "parallel",
+                    "batch_size", "ubatch_size", "threads", "threads_batch", "cpu_kv_cache_gib",
+                )
+                if deployed_config.get(key) is not None
+            }
         result["summary"]["prompt_cache_mode"] = (
             "disabled" if cache_prompt is False else "server default" if request.benchmark_tool == "http_streaming" and instance.get("inference_engine") == "llama_cpp" else "n/a"
         )

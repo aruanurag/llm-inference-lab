@@ -479,20 +479,46 @@ def add_guided_workbook(doc: Document) -> None:
     )
 
     for number, concurrency, requests, label in [
-        (6, "1", "24 — each prompt once", "single-request load"),
+        (6, "1", "24 — prompts repeat only as required to reach 24 requests", "single-request load"),
         (7, "4", "32 — prompts repeat only as required to reach 32 requests", "moderate load"),
         (8, "8", "64 — prompts repeat only as required to reach 64 requests", "sustained load"),
     ]:
+        is_single_request = number == 6
         add_worksheet(
             doc,
             number,
             f"llama.cpp HTTP throughput — {label}",
             "Measure serving capacity at this one fixed concurrency. Keep all deployment settings unchanged while you compare aggregate work rate with tail latency.",
-            llama_http_inputs("Throughput comparison prompts", concurrency, requests, "256", "Use the same deployed process for the complete three-trial worksheet"),
+            llama_http_inputs(
+                "Throughput comparison prompts",
+                concurrency,
+                requests,
+                "256",
+                "Use the same deployed process for the complete three-trial worksheet",
+                [
+                    "VM.Standard.E6.Flex; 4 OCPUs; 32 GiB; RUNNING",
+                    "VM.Standard.E6.Ax.Flex; 4 OCPUs; 32 GiB; RUNNING",
+                    "llama.cpp 0.4.0-dev, build 10811",
+                    "Qwen2.5 1.5B Instruct Q4_K_M GGUF",
+                    "Configured: context 4096; slots 1; batch 512; micro-batch 128; native OFF; VNNI disabled",
+                    "HTTP streaming through SSH tunnel",
+                    "6 throughput prompts; request prompt cache disabled" if is_single_request else "________",
+                    f"Concurrency {concurrency}; requests {requests.split(' — ')[0]}; max tokens 256" if is_single_request else "________",
+                    "Model warm; request prompt cache disabled" if is_single_request else "________",
+                ] if is_single_request else None,
+                server_settings="Context 4096; parallel slots 1; batch 512; micro-batch 128; native build OFF; Disable VNNI ON" if is_single_request else "Context 4096; parallel slots 4; batch 512; micro-batch 128; native build OFF; Disable VNNI ON",
+            ),
             http_headers,
-            paired_http_rows(),
+            paired_http_rows(completed={
+                (1, "E6 Flex"): ["24 / 24", "343.1 ms", "409.7 ms", "24.3 ms", "5.820 s", "0.186", "55.23"],
+                (1, "E6 Ax Flex"): ["24 / 24", "317.1 ms", "368.1 ms", "24.6 ms", "5.552 s", "0.194", "57.54"],
+                (2, "E6 Flex"): ["24 / 24", "338.4 ms", "423.1 ms", "24.7 ms", "5.831 s", "0.186", "55.05"],
+                (2, "E6 Ax Flex"): ["24 / 24", "325.0 ms", "353.7 ms", "25.0 ms", "5.550 s", "0.194", "57.54"],
+                (3, "E6 Flex"): ["24 / 24", "316.6 ms", "329.6 ms", "24.7 ms", "5.845 s", "0.185", "54.91"],
+                (3, "E6 Ax Flex"): ["24 / 24", "323.9 ms", "370.5 ms", "23.9 ms", "5.567 s", "0.194", "57.46"],
+            } if is_single_request else None),
             http_widths,
-            "A higher request rate or output-token rate is better only when the p95 TTFT and p95 latency remain acceptable. Record all fields before judging the winner.",
+            "Only the three cache_prompt=false trials are recorded here; historical server-default prompt-cache runs are excluded. A higher request rate or output-token rate is better only when the p95 TTFT and p95 latency remain acceptable. Record all fields before judging the winner." if is_single_request else "A higher request rate or output-token rate is better only when the p95 TTFT and p95 latency remain acceptable. Record all fields before judging the winner.",
         )
 
     native_headers = ["Trial", "Shape", "Repetitions OK", "Prompt tok/s", "Decode tok/s", "Representative input", "Notes"]
@@ -510,15 +536,28 @@ def add_guided_workbook(doc: Document) -> None:
         9,
         "llama-bench microbenchmark — prompt processing",
         "Measure llama.cpp prompt-processing throughput without the HTTP path. This is an engine microbenchmark, so use it alongside—not as a replacement for—the HTTP TTFT worksheets.",
-        native_common + [
-            ["Prompt set", "TTFT length sweep · long unique prompts", "________"],
-            ["Run values", "Max tokens 128; repetitions 5", "________"],
-            ["Concurrency field", "Any displayed UI concurrency is ignored by llama-bench", "________"],
+        [
+            ["Baseline instance", "VM.Standard.E6.Flex; 8 OCPUs; 64 GiB", "VM.Standard.E6.Flex; 8 OCPUs; 64 GiB; RUNNING"],
+            ["Candidate instance", "VM.Standard.E6.Ax.Flex; 8 OCPUs; 64 GiB", "VM.Standard.E6.Ax.Flex; 8 OCPUs; 64 GiB; RUNNING"],
+            ["Inference engine", "llama.cpp", "llama.cpp 0.4.0-dev, build 10864"],
+            ["Model", "Qwen2.5 1.5B Instruct Q4_K_M GGUF", "Qwen2.5 1.5B Instruct Q4_K_M GGUF"],
+            ["Server build", "Context 4096; parallel slots 4; batch 512; micro-batch 128; native build OFF; Disable VNNI ON", "Configured: context 4096; slots 4; batch 512; micro-batch 128; native OFF; VNNI disabled"],
+            ["Benchmark method", "llama-bench", "llama-bench"],
+            ["Prompt set", "TTFT length sweep · long unique prompts", "TTFT length sweep · long unique prompts"],
+            ["Run values", "Max tokens 128; repetitions 5", "Prompt length 1483 tokens; max tokens 128; repetitions 5"],
+            ["Concurrency field", "Any displayed UI concurrency is ignored by llama-bench", "UI concurrency 1; ignored by llama-bench"],
         ],
         native_headers,
-        paired_native_rows(),
+        [
+            ["1", "E6 Flex", "5 / 5", "326.80", "51.90", "1483 tokens", "8 threads; return code 0"],
+            ["1", "E6 Ax Flex", "5 / 5", "316.80", "78.98", "1483 tokens", "8 threads; return code 0"],
+            ["2", "E6 Flex", "5 / 5", "327.82", "51.92", "1483 tokens", "8 threads; return code 0"],
+            ["2", "E6 Ax Flex", "5 / 5", "317.83", "79.77", "1483 tokens", "8 threads; return code 0"],
+            ["3", "E6 Flex", "5 / 5", "327.82", "51.86", "1483 tokens", "8 threads; return code 0"],
+            ["3", "E6 Ax Flex", "5 / 5", "316.61", "79.51", "1483 tokens", "8 threads; return code 0"],
+        ],
         native_widths,
-        "llama-bench creates a representative synthetic input length from the selected prompt set. Record the displayed length and prompt tok/s; it does not produce network TTFT.",
+        "All three 8-OCPU native matched trials from 8 September 2026 are imported. This worksheet records only llama-bench output; the separate HTTP long-prefill run is excluded because all requests returned HTTP 400. Prompt tok/s is the Worksheet 9 result; llama-bench does not produce network TTFT.",
     )
 
     add_worksheet(
@@ -526,15 +565,28 @@ def add_guided_workbook(doc: Document) -> None:
         10,
         "llama-bench microbenchmark — token generation",
         "Measure llama.cpp generated-token throughput without the HTTP path. This isolates the decode-oriented native measurement.",
-        native_common + [
-            ["Prompt set", "Long decode prompts", "________"],
-            ["Run values", "Max tokens 512; repetitions 5", "________"],
-            ["Concurrency field", "Any displayed UI concurrency is ignored by llama-bench", "________"],
+        [
+            ["Baseline instance", "VM.Standard.E6.Flex; 8 OCPUs; 64 GiB", "VM.Standard.E6.Flex; 8 OCPUs; 64 GiB; RUNNING"],
+            ["Candidate instance", "VM.Standard.E6.Ax.Flex; 8 OCPUs; 64 GiB", "VM.Standard.E6.Ax.Flex; 8 OCPUs; 64 GiB; RUNNING"],
+            ["Inference engine", "llama.cpp", "llama.cpp 0.4.0-dev, build 10864"],
+            ["Model", "Qwen2.5 1.5B Instruct Q4_K_M GGUF", "Qwen2.5 1.5B Instruct Q4_K_M GGUF"],
+            ["Server build", "Context 4096; parallel slots 4; batch 512; micro-batch 128; native build OFF; Disable VNNI ON", "Configured: context 4096; slots 4; batch 512; micro-batch 128; native OFF; VNNI disabled"],
+            ["Benchmark method", "llama-bench", "llama-bench"],
+            ["Prompt set", "Long decode prompts", "Long decode prompts"],
+            ["Run values", "Max tokens 128; repetitions 5", "Prompt length 20 tokens; max tokens 128; repetitions 5"],
+            ["Concurrency field", "Any displayed UI concurrency is ignored by llama-bench", "UI concurrency 1; ignored by llama-bench"],
         ],
         native_headers,
-        paired_native_rows(),
+        [
+            ["1", "E6 Flex", "5 / 5", "314.12", "51.86", "20 in / 128 out", "8 threads; return code 0"],
+            ["1", "E6 Ax Flex", "5 / 5", "293.09", "79.39", "20 in / 128 out", "8 threads; return code 0"],
+            ["2", "E6 Flex", "5 / 5", "314.86", "51.99", "20 in / 128 out", "8 threads; return code 0"],
+            ["2", "E6 Ax Flex", "5 / 5", "285.89", "80.36", "20 in / 128 out", "8 threads; return code 0"],
+            ["3", "E6 Flex", "5 / 5", "315.00", "51.94", "20 in / 128 out", "8 threads; return code 0"],
+            ["3", "E6 Ax Flex", "5 / 5", "289.95", "80.69", "20 in / 128 out", "8 threads; return code 0"],
+        ],
         native_widths,
-        "Use decode tok/s as the key result. Do not compare its absolute value to HTTP ITL or to CPU vLLM TPOT; they measure different parts of the system.",
+        "All three 8-OCPU native matched trials from 8 September 2026 are imported. Use decode tok/s as the key result. Do not compare its absolute value to HTTP ITL or to CPU vLLM TPOT; they measure different parts of the system.",
     )
 
     add_worksheet(

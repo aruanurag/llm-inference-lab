@@ -16,6 +16,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .venv/
 venv/
@@ -31,17 +33,21 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.tsbuildinfo
 
 # Local env files
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # Local credentials, app state, and exported experiment bundles
 .llm-inference-cloud/
 **/.llm-inference-cloud/
 .kube/
 **/.kube/
+.oci/
+.aws/
 kubeconfig
 kubeconfig.*
 *.kubeconfig
@@ -50,12 +56,21 @@ oci-inference-cloud-dev/
 *.sqlite
 *.sqlite3
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 *.pem
 *.key
 *.p8
 id_rsa*
 id_ed25519*
 *-export.json
+*.log
+*.pid
 
 # Local model weights are usually large and should not be committed.
 models/

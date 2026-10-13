@@ -141,9 +141,17 @@ def native_benchmark_script(
     max_tokens: int,
     requests: int,
     concurrency: int,
+    threads: int | None = None,
+    threads_batch: int | None = None,
 ) -> str:
     if tool == "llama_bench":
         model_filename = shlex.quote(model["filename"])
+        # llama-server accepts separate generation and batch/prefill thread
+        # controls, but llama-bench's current CLI exposes only ``-t``.  Do not
+        # pass the server-only ``-tb`` flag here: it makes the benchmark print
+        # help and exit before producing any measurements.  The native run is
+        # deliberately a single-thread-setting microbenchmark.
+        thread_args = f"-t {int(threads)}" if threads else ""
         return textwrap.dedent(
             f"""
             set -euo pipefail
@@ -152,7 +160,7 @@ def native_benchmark_script(
             BENCH="$HOME/oci-inference-cloud/llama.cpp/build/bin/llama-bench"
             test -x "$BENCH" || {{ echo "llama-bench is not installed; deploy llama.cpp first."; exit 1; }}
             test -f "$MODEL_PATH" || {{ echo "Model file is missing: $MODEL_PATH"; exit 1; }}
-            "$BENCH" -m "$MODEL_PATH" -p {prompt_tokens} -n {max_tokens} -r {requests} -o json
+            "$BENCH" -m "$MODEL_PATH" -p {prompt_tokens} -n {max_tokens} -r {requests} {thread_args} -o json
             """
         ).strip()
     if tool == "vllm_bench_serve":
@@ -188,6 +196,8 @@ def run_native_benchmark(
     requests: int,
     concurrency: int,
     max_tokens: int,
+    threads: int | None = None,
+    threads_batch: int | None = None,
 ) -> dict[str, Any]:
     expected = recommended_tool(engine)
     if tool != expected:
@@ -200,6 +210,8 @@ def run_native_benchmark(
         max_tokens=max_tokens,
         requests=requests,
         concurrency=concurrency,
+        threads=threads,
+        threads_batch=threads_batch,
     )
     result = run_ssh(private_key_path, user, host, script, timeout=None)
     raw = {"tool": tool, "engine": engine, "command_output": result.stdout, "command_error": result.stderr, "returncode": result.returncode}
